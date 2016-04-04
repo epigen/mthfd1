@@ -1,0 +1,7 @@
+sample_name,cell_line,library,ip,knockout,number_cells,clone,condition,treatment,experiment_name,technical_replicate,organism,flowcell,lane,BSF_name
+HAP1_CM_BRD4_wt_16mio_untreated_CM39s2,HAP1,ChIPmentation,BRD4,wt,16mio,,,untreated,CM39s2,,human,BSF_0207_H5JL7BBXX,8,HAP1_CM_BRD4_wt_untreated_CM39s2_S12575
+HAP1_CM_H3K27ac_wt_16mio_untreated_CM39s3,HAP1,ChIPmentation,H3K27ac,wt,16mio,,,untreated,CM39s3,,human,BSF_0207_H5JL7BBXX,8,HAP1_CM_H3K27ac_wt_untreated_CM39s3_S12576
+HAP1_CM_IgG_wt_16mio_untreated_CM39s1,HAP1,ChIPmentation,IgG,wt,16mio,,,untreated,CM39s1,,human,BSF_0207_H5JL7BBXX,8,HAP1_CM_IgG_wt_untreated_CM39s1_S12574
+HAP1_CM_MTHFD1Ab_wt_16mio_untreated_CM39s4,HAP1,ChIPmentation,MTHFD1Ab,wt,16mio,,,untreated,CM39s4,,human,BSF_0207_H5JL7BBXX,8,HAP1_CM_MTHFD1Ab_wt_untreated_CM39s4_S12577
+HAP1_CM_MTHFD1C3_wt_16mio_untreated_CM39s6,HAP1,ChIPmentation,MTHFD1C3,wt,16mio,,,untreated,CM39s6,,human,BSF_0207_H5JL7BBXX,8,HAP1_CM_MTHFD1H120_wt_untreated_CM39s5_S12578
+HAP1_CM_MTHFD1H120_wt_16mio_untreated_CM39s5,HAP1,ChIPmentation,MTHFD1H120,wt,16mio,,,untreated,CM39s5,,human,BSF_0207_H5JL7BBXX,8,HAP1_CM_MTHFD1C3_wt_untreated_CM39s6_S12579
