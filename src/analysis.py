@@ -1183,6 +1183,18 @@ def main():
     cmd = "ngs.plot.r -G hg19 -R genebody -L 3000 -C config.txt -O genebody_coverage -GO km"
     cmd = "ngs.plot.r -G hg19 -R genebody -C config.txt -O average_profile_coverage -D ensembl -FL 3000"
 
+    # Only H3K27ac/BRD4/MTHFD1-bound (or proximity) peaks
+    with open("config.txt", "w") as handle:
+        for sample1 in prj.samples:
+            for sample2 in prj.samples[:2] + [prj.samples[-1]]:
+                handle.write(
+                    "\t".join([
+                        sample1.filtered,
+                        os.path.join("results", sample2.name, sample2.name + "_genes.ensembl.txt"),
+                        "{}_signal_on_{}_peaks".format(sample1.name, sample2.name) + "\n"]))
+
+    cmd = "ngs.plot.r -G hg19 -R genebody -C config.txt -O average_profile_coverage_peakgenes -D ensembl -FL 3000"
+
     # Plot region types per sample
     plot_region_types_per_sample(analysis)
 
