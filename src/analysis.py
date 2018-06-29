@@ -4,14 +4,18 @@
 This is the main script of the mthfd1 project.
 """
 
+
+if __name__ == '__main__':
+    import matplotlib
+    matplotlib.use('Agg')
+
 import os
 import sys
 from looper.models import Project
 import pybedtools
-import matplotlib
-# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib
 from matplotlib.pyplot import cm
 import multiprocessing
 import parmap
@@ -21,6 +25,7 @@ import numpy as np
 import cPickle as pickle
 from collections import Counter
 
+
 # Set settings
 pd.set_option("date_dayfirst", True)
 sns.set(context="paper", style="white", palette="pastel", color_codes=True)
@@ -29,1201 +34,614 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 matplotlib.rc('text', usetex=False)
 
 
-def pickle_me(function):
-    """
-    Decorator for some methods of Analysis class.
-    """
-    def wrapper(obj, *args):
-        function(obj, *args)
-        pickle.dump(obj, open(obj.pickle_file, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
-    return wrapper
+def atacseq_analysis():
+    from ngs_toolkit.general import (collect_differential_enrichment,
+                                differential_analysis,
+                                differential_enrichment, differential_overlap,
+                                plot_differential,
+                                plot_differential_enrichment)
+
+    # ATAC-seq
+    # Start project and analysis objects
+    for cell_line in ["HAP1", "A549"]:
+        prj = Project("metadata/project_config.yaml")
+        prj.samples = [sample for sample in prj.samples if sample.library == "ATAC-seq" and sample.cell_line == cell_line]
+        for sample in prj.samples:
+            sample.mapped = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.bam")
+            sample.filtered = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
+            sample.peaks = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_peaks.narrowPeak")
+        atac_analysis = ATACSeqAnalysis(name="mthfd1_atac_{}".format(cell_line), prj=prj, samples=prj.samples)
+
+        atac_analysis.chromatin_state = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.chromatin_state.csv"))
+        atac_analysis.chromatin_state_background = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.chromatin_state_background.csv"))
+        atac_analysis.closest_tss_distances = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.closest_tss_distances.pickle"))
+        atac_analysis.gene_annotation = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.gene_annotation.csv"))
+        atac_analysis.region_annotation = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.region_annotation.csv"))
+        atac_analysis.region_annotation_background = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.region_annotation_background.csv"))
+        atac_analysis.support = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.support.csv"))
+        atac_analysis.raw_coverage = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.raw_coverage.csv"))
+        atac_analysis.coverage_qnorm = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.coverage_qnorm.csv"), index_col=0)
+        atac_analysis.coverage_qnorm_annotated = pd.read_csv(os.path.join("results", "mthfd1_atac_HAP1_peaks.coverage_qnorm.annotated.csv"), index_col=0)
+        atac_analysis.accessibility = pd.read_csv(os.path.join("results", "mthfd1_atac.accessibility.annotated_metadata.csv"), index_col=0, header=range(5))
+
+        # Project's attributes
+        sample_attributes = ["sample_name", "cell_line", "library", "condition", "replicate"]
+        attributes_to_plot = ["cell_line", "condition", "replicate"]
 
 
-class Analysis(object):
-    """
-    Class to hold functions and data from analysis.
-    """
+        # Get consensus peak set from all samples
+        atac_analysis.get_consensus_sites(atac_analysis.samples)
+        atac_analysis.calculate_peak_support(atac_analysis.samples)
+        atac_analysis.get_peak_gene_annotation()
+        atac_analysis.get_peak_genomic_location()
+        atac_analysis.get_peak_chromatin_state(os.path.join(atac_analysis.data_dir, "external", "HAP1_12_segments.annotated.bed"))
 
-    def __init__(
-            self,
-            data_dir=os.path.join(".", "data"),
-            results_dir=os.path.join(".", "results"),
-            pickle_file=os.path.join(".", "data", "analysis.pickle"),
+        # Get coverage values for each peak in each sample of ATAC-seq
+        atac_analysis.measure_coverage(atac_analysis.samples)
+
+        # Normalize ointly (quantile normalization + GC correction)
+        atac_analysis.normalize(method="quantile")
+
+        # Annotate peaks
+        atac_analysis.annotate(quant_matrix="coverage_qnorm")
+
+        # Annotate samples
+        atac_analysis.accessibility = atac_analysis.annotate_with_sample_metadata(
+            quant_matrix="coverage_annotated",
+            attributes=sample_attributes)
+
+        # Unsupervised analysis
+        atac_analysis.unsupervised(
+            quant_matrix="accessibility", samples=None,
+            attributes_to_plot=attributes_to_plot, plot_prefix="accessibility_{}".format(cell_line))
+
+        # Supervised analysis
+        comparison_table = pd.read_csv(os.path.join("metadata", "comparison_table.csv"))
+        comparison_table = comparison_table[comparison_table["toggle"] == 1]
+        comparison_table = comparison_table[comparison_table["data_type"] == "ATAC-seq"]
+
+        c = comparison_table[comparison_table["comparison_name"].str.contains(cell_line)]
+        _ = differential_analysis(atac_analysis, c, data_type="ATAC-seq", overwrite=False, output_prefix="differential_analysis_{}".format(cell_line))
+
+        # Visualize regions and samples found in the differential comparisons
+        atacseq_results = pd.read_csv(
+            os.path.join(
+                "results",
+                "differential_analysis_ATAC-seq",
+                "differential_analysis_{}".format(cell_line) + ".deseq_result.all_comparisons.csv"), index_col=0)
+
+        plot_differential(
+            atac_analysis,
+            atacseq_results,
+            c,
             samples=None,
-            prj=None,
-            from_pickle=False,
-            **kwargs):
-        # parse kwargs with default
-        self.data_dir = data_dir
-        self.results_dir = results_dir
-        self.samples = samples
-        self.pickle_file = pickle_file
-
-        for directory in [self.data_dir, self.results_dir]:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-
-        # parse remaining kwargs
-        self.__dict__.update(kwargs)
-
-        # reload itself if required
-        if from_pickle:
-            self.__dict__.update(self.from_pickle().__dict__)
-
-    @pickle_me
-    def to_pickle(self):
-        pass
-
-    def from_pickle(self):
-        return pickle.load(open(self.pickle_file, 'rb'))
-
-    @pickle_me
-    def get_consensus_sites(self, samples):
-        """Get consensus (union) sites across samples"""
-
-        for i, sample in enumerate(samples):
-            print(sample.name)
-            # Get peaks
-            peaks = pybedtools.BedTool(sample.peaks)
-            # Merge overlaping peaks within a sample
-            peaks = peaks.merge()
-            if i == 0:
-                sites = peaks
-            else:
-                # Concatenate all peaks
-                sites = sites.cat(peaks)
-
-        # Merge overlaping peaks across samples
-        sites = sites.merge()
-
-        # Filter
-        # remove blacklist regions
-        blacklist = pybedtools.BedTool(os.path.join(self.data_dir, "external", "wgEncodeDacMapabilityConsensusExcludable.bed"))
-        # remove chrM peaks and save
-        sites.intersect(v=True, b=blacklist).filter(lambda x: x.chrom != 'chrM').saveas(os.path.join(self.results_dir, "mthfd1_peaks.bed"))
-
-        # Read up again
-        self.sites = pybedtools.BedTool(os.path.join(self.results_dir, "mthfd1_peaks.bed"))
-
-    @pickle_me
-    def get_consensus_sites_from_comparisons(
-            self, comparisons, samples,
-            min_width=[(["H3K27ac"], 1000), (["BRD4", "MTHFD1"], 500)]):
-        """Get consensus (union) of sites across samples"""
-        self.sites = dict()
-
-        # For each comparison
-        for j, comparison in enumerate(comparisons['comparison'].drop_duplicates()):
-            # Raise on comparisons with only one side (incomplete still)
-            if len(set(comparisons[(comparisons["comparison"] == comparison)]["comparison_side"].tolist())) != 2:
-                raise ValueError("Comparison '%s' only has one side" % comparison)
-
-            # Get peaks
-            peaks = pybedtools.BedTool(comparisons['peaks'].drop_duplicates().ix[comparisons['comparison'] == comparison].tolist()[0])
-            comparisons.loc[(comparisons["comparison"] == comparison), "number_peaks"] = len(peaks)
-            print(j, comparison, len(peaks))
-
-            # Merge overlaping peaks within a sample
-            peaks = peaks.merge()
-
-            # Extend peaks if under a certain size (depending on factor)
-            for factors, width in min_width:
-                if any([f in comparison for f in factors]):
-                    print("Selected minimal width for comparison %s is %i bp." % (comparison, width))
-                    break
-            peaks = extend_sites_to_minimum(peaks, min_width=width)
-
-            if j == 0:
-                sites = peaks
-            else:
-                # Concatenate all peaks
-                sites = sites.cat(peaks)
-
-            # Merge overlaping peaks across samples
-            sites = sites.merge()
-            print(j, comparison, len(sites))
-
-        # Filter out blacklisted regions
-        output_name = os.path.join(self.data_dir, "mthfd1_peaks.bed")
-        blacklist = pybedtools.BedTool(os.path.join(self.data_dir, "external", "wgEncodeDacMapabilityConsensusExcludable.bed"))
-        # remove blacklist regions and save
-        sites.intersect(v=True, b=blacklist).filter(lambda x: x.chrom != 'chrM').saveas(output_name)
-        sites.saveas(output_name)
-
-        # Read up again
-        self.sites = pybedtools.BedTool(output_name)
-
-    def calculate_peak_support(self, comparisons, samples, min_width=[(["H3K27ac"], 1000), (["BRD4", "MTHFD1"], 500)]):
-        # calculate support (number of samples overlaping each merged peak)
-        for i, comparison in enumerate(comparisons['comparison'].drop_duplicates()):
-            print(comparison)
-            peaks = pybedtools.BedTool(comparisons['peaks'].drop_duplicates().ix[comparisons['comparison'] == comparison].tolist()[0])
-
-            # Extend peaks if under a certain size (depending on factor)
-            for factors, width in min_width:
-                if any([f in comparison for f in factors]):
-                    print("Selected minimal width for comparison %s is %i bp." % (comparison, width))
-                    break
-            peaks = extend_sites_to_minimum(peaks, min_width=width)
-
-            if i == 0:
-                support = self.sites.intersect(peaks, wa=True, c=True)
-            else:
-                support = support.intersect(peaks, wa=True, c=True)
-        support = support.to_dataframe()
-        # support = support.reset_index()
-        support.columns = ["chrom", "start", "end"] + comparisons['comparison'].drop_duplicates().tolist()
-        support.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.binary_overlap_support.csv"), index=False)
-
-        # get % of total consensus regions found per sample
-        m = pd.melt(support, ["chrom", "start", "end"], var_name="sample_name")
-        # groupby
-        n = m.groupby("sample_name").apply(lambda x: len(x[x["value"] == 1]))
-
-        # divide sum (of unique overlaps) by total to get support value between 0 and 1
-        support["support"] = support[range(len(samples))].apply(lambda x: sum([i if i <= 1 else 1 for i in x]) / float(len(self.samples)), axis=1)
-        # save
-        support.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.support.csv"), index=False)
-
-        self.support = support
-
-    @pickle_me
-    def measure_coverage(self, samples):
-        # Count reads with pysam
-        # make strings with intervals
-        sites_str = [str(i.chrom) + ":" + str(i.start) + "-" + str(i.stop) for i in self.sites]
-        # count, create dataframe
-        self.coverage = pd.DataFrame(
-            map(
-                lambda x:
-                    pd.Series(x),
-                    parmap.map(
-                        count_reads_in_intervals,
-                        [sample.filtered for sample in samples],
-                        sites_str,
-                        parallel=True
-                    )
-            ),
-            index=[sample.name for sample in samples]
-        ).T
-
-        # Add interval description to df
-        ints = map(
-            lambda x: (
-                x.split(":")[0],
-                x.split(":")[1].split("-")[0],
-                x.split(":")[1].split("-")[1]
-            ),
-            self.coverage.index
-        )
-        self.coverage["chrom"] = [x[0] for x in ints]
-        self.coverage["start"] = [int(x[1]) for x in ints]
-        self.coverage["end"] = [int(x[2]) for x in ints]
-
-        # save to disk
-        self.coverage.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.raw_coverage.tsv"), sep="\t", index=True)
-
-    @pickle_me
-    def normalize_coverage_quantiles(self, samples):
-        # Normalize by quantiles
-        to_norm = self.coverage.loc[:, [s.name for s in samples]]
-        self.coverage_qnorm = pd.DataFrame(
-            normalize_quantiles_r(np.array(to_norm)),
-            index=to_norm.index,
-            columns=to_norm.columns
-        )
-        # Log2 transform
-        self.coverage_qnorm = np.log2(1 + self.coverage_qnorm)
-
-        self.coverage_qnorm = self.coverage_qnorm.join(self.coverage[['chrom', 'start', 'end']])
-        self.coverage_qnorm.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.coverage_qnorm.log2.tsv"), sep="\t", index=True)
-
-    def get_peak_gene_annotation(self):
-        """
-        Annotates peaks with closest gene.
-        Needs files downloaded by prepare_external_files.py
-        """
-        # create bedtool with hg19 TSS positions
-        hg19_ensembl_tss = pybedtools.BedTool(os.path.join(self.data_dir, "external", "ensembl_tss.bed"))
-        # get closest TSS of each cll peak
-        closest = self.sites.closest(hg19_ensembl_tss, d=True).to_dataframe()[['chrom', 'start', 'end', 'thickStart', 'blockCount']]
-        closest.columns = ['chrom', 'start', 'end', 'ensembl_transcript_id', 'distance']
-
-        # add gene name and ensemble_gene_id
-        ensembl_gtn = pd.read_table(os.path.join(self.data_dir, "external", "ensemblToGeneName.txt"), header=None)
-        ensembl_gtn.columns = ['ensembl_transcript_id', 'gene_name']
-        ensembl_gtp = pd.read_table(os.path.join(self.data_dir, "external", "ensGtp.txt"), header=None)[[0, 1]]
-        ensembl_gtp.columns = ['ensembl_gene_id', 'ensembl_transcript_id']
-        ensembl = pd.merge(ensembl_gtn, ensembl_gtp)
-
-        gene_annotation = pd.merge(closest, ensembl, how="left")
-
-        # aggregate annotation per peak, concatenate various genes (comma-separated)
-        self.gene_annotation = gene_annotation.groupby(['chrom', 'start', 'end']).aggregate(lambda x: ",".join(set([str(i) for i in x]))).reset_index()
-
-        # save to disk
-        self.gene_annotation.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.gene_annotation.csv"), index=False)
-
-        # save distances to all TSSs (for plotting)
-        self.closest_tss_distances = closest['distance'].tolist()
-        pickle.dump(self.closest_tss_distances, open(os.path.join(self.results_dir, "mthfd1_peaks.closest_tss_distances.pickle"), 'wb'))
-
-    def get_peak_genomic_location(self):
-        """
-        Annotates peaks with its type of genomic location.
-        Needs files downloaded by prepare_external_files.py
-        """
-        regions = [
-            "ensembl_genes.bed", "ensembl_tss2kb.bed",
-            "ensembl_utr5.bed", "ensembl_exons.bed", "ensembl_introns.bed", "ensembl_utr3.bed"]
-
-        # create background
-        # shuffle regions in genome to create background (keep them in the same chromossome)
-        background = self.sites.shuffle(genome='hg19', chrom=True)
-
-        for i, region in enumerate(regions):
-            region_name = region.replace(".bed", "").replace("ensembl_", "")
-            r = pybedtools.BedTool(os.path.join(self.data_dir, "external", region))
-            if region_name == "genes":
-                region_name = "intergenic"
-                df = self.sites.intersect(r, wa=True, f=0.2, v=True).to_dataframe()
-                dfb = background.intersect(r, wa=True, f=0.2, v=True).to_dataframe()
-            else:
-                df = self.sites.intersect(r, wa=True, u=True, f=0.2).to_dataframe()
-                dfb = background.intersect(r, wa=True, u=True, f=0.2).to_dataframe()
-            df['genomic_region'] = region_name
-            dfb['genomic_region'] = region_name
-            if i == 0:
-                region_annotation = df
-                region_annotation_b = dfb
-            else:
-                region_annotation = pd.concat([region_annotation, df])
-                region_annotation_b = pd.concat([region_annotation_b, dfb])
-
-        # sort
-        region_annotation.sort(['chrom', 'start', 'end'], inplace=True)
-        region_annotation_b.sort(['chrom', 'start', 'end'], inplace=True)
-        # remove duplicates (there shouldn't be anyway)
-        region_annotation = region_annotation.reset_index(drop=True).drop_duplicates()
-        region_annotation_b = region_annotation_b.reset_index(drop=True).drop_duplicates()
-        # join various regions per peak
-        self.region_annotation = region_annotation.groupby(['chrom', 'start', 'end']).aggregate(lambda x: ",".join(set([str(i) for i in x]))).reset_index()
-        self.region_annotation_b = region_annotation_b.groupby(['chrom', 'start', 'end']).aggregate(lambda x: ",".join(set([str(i) for i in x]))).reset_index()
-
-        # save to disk
-        self.region_annotation.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.region_annotation.csv"), index=False)
-        self.region_annotation_b.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.region_annotation_background.csv"), index=False)
-
-    def get_peak_chromatin_state(self):
-        """
-        Annotates peaks with chromatin states.
-        (For now states are from CD19+ cells).
-        Needs files downloaded by prepare_external_files.py
-        """
-        # create bedtool with CD19 chromatin states
-        states_cd19 = pybedtools.BedTool(os.path.join(self.data_dir, "external", "HAP1_12_segments.annotated.bed"))
-
-        # create background
-        # shuffle regions in genome to create background (keep them in the same chromossome)
-        background = self.sites.shuffle(genome='hg19', chrom=True)
-
-        # intersect with cll peaks, to create annotation, get original peaks
-        chrom_state_annotation = self.sites.intersect(states_cd19, wa=True, wb=True, f=0.2).to_dataframe()[['chrom', 'start', 'end', 'thickStart']]
-        chrom_state_annotation_b = background.intersect(states_cd19, wa=True, wb=True, f=0.2).to_dataframe()[['chrom', 'start', 'end', 'thickStart']]
-
-        # aggregate annotation per peak, concatenate various annotations (comma-separated)
-        self.chrom_state_annotation = chrom_state_annotation.groupby(['chrom', 'start', 'end']).aggregate(lambda x: ",".join(x)).reset_index()
-        self.chrom_state_annotation.columns = ['chrom', 'start', 'end', 'chromatin_state']
-
-        self.chrom_state_annotation_b = chrom_state_annotation_b.groupby(['chrom', 'start', 'end']).aggregate(lambda x: ",".join(x)).reset_index()
-        self.chrom_state_annotation_b.columns = ['chrom', 'start', 'end', 'chromatin_state']
-
-        # save to disk
-        self.chrom_state_annotation.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.chromatin_state.csv"), index=False)
-        self.chrom_state_annotation_b.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.chromatin_state_background.csv"), index=False)
-
-    @pickle_me
-    def annotate(self, samples):
-        # add closest gene
-        self.coverage_qnorm_annotated = pd.merge(
-            self.coverage_qnorm,
-            self.gene_annotation, on=['chrom', 'start', 'end'], how="left")
-        # add genomic location
-        self.coverage_qnorm_annotated = pd.merge(
-            self.coverage_qnorm_annotated,
-            self.region_annotation[['chrom', 'start', 'end', 'genomic_region']], on=['chrom', 'start', 'end'], how="left")
-        # add chromatin state
-        self.coverage_qnorm_annotated = pd.merge(
-            self.coverage_qnorm_annotated,
-            self.chrom_state_annotation[['chrom', 'start', 'end', 'chromatin_state']], on=['chrom', 'start', 'end'], how="left")
-
-        # add support
-        self.coverage_qnorm_annotated = pd.merge(
-            self.coverage_qnorm_annotated,
-            self.support[['chrom', 'start', 'end', 'support']], on=['chrom', 'start', 'end'], how="left")
-
-        # calculate mean coverage
-        self.coverage_qnorm_annotated['mean'] = self.coverage_qnorm_annotated[[sample.name for sample in samples]].mean(axis=1)
-        # calculate coverage variance
-        self.coverage_qnorm_annotated['variance'] = self.coverage_qnorm_annotated[[sample.name for sample in samples]].var(axis=1)
-        # calculate std deviation (sqrt(variance))
-        self.coverage_qnorm_annotated['std_deviation'] = np.sqrt(self.coverage_qnorm_annotated['variance'])
-        # calculate dispersion (variance / mean)
-        self.coverage_qnorm_annotated['dispersion'] = self.coverage_qnorm_annotated['variance'] / self.coverage_qnorm_annotated['mean']
-        # calculate qv2 (std / mean) ** 2
-        self.coverage_qnorm_annotated['qv2'] = (self.coverage_qnorm_annotated['std_deviation'] / self.coverage_qnorm_annotated['mean']) ** 2
-
-        # calculate "amplitude" (max - min)
-        self.coverage_qnorm_annotated['amplitude'] = (
-            self.coverage_qnorm_annotated[[sample.name for sample in samples]].max(axis=1) -
-            self.coverage_qnorm_annotated[[sample.name for sample in samples]].min(axis=1)
-        )
-
-        # Pair indexes
-        assert self.coverage.shape[0] == self.coverage_qnorm_annotated.shape[0]
-        self.coverage_qnorm_annotated.index = self.coverage.index
-
-        # Save
-        self.coverage_qnorm_annotated.to_csv(os.path.join(self.results_dir, "mthfd1_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index=True)
-
-    def plot_peak_characteristics(self):
-        # Loop at summary statistics:
-        # interval lengths
-        fig, axis = plt.subplots()
-        sns.distplot([interval.length for interval in self.sites], bins=300, kde=False, ax=axis)
-        axis.set_xlim(0, 2000)  # cut it at 2kb
-        axis.set_xlabel("peak width (bp)")
-        axis.set_ylabel("frequency")
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.lengths.svg"), bbox_inches="tight")
-        plt.close("all")
-
-        # plot support
-        fig, axis = plt.subplots()
-        sns.distplot(self.support["support"], bins=40, ax=axis, kde=False)
-        axis.set_ylabel("frequency")
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.support.svg"), bbox_inches="tight")
-        plt.close("all")
-
-        # Plot distance to nearest TSS
-        fig, axis = plt.subplots()
-        sns.distplot(self.closest_tss_distances, bins=200, ax=axis, kde=False)
-        axis.set_xlim(0, 100000)  # cut it at 100kb
-        axis.set_xlabel("distance to nearest TSS (bp)")
-        axis.set_ylabel("frequency")
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.tss_distance.svg"), bbox_inches="tight")
-        plt.close("all")
-
-        # Plot genomic regions
-        # these are just long lists with genomic regions
-        all_region_annotation = [item for sublist in self.region_annotation['genomic_region'].apply(lambda x: x.split(",")) for item in sublist]
-        all_region_annotation_b = [item for sublist in self.region_annotation_b['genomic_region'].apply(lambda x: x.split(",")) for item in sublist]
-
-        # count region frequency
-        count = Counter(all_region_annotation)
-        data = pd.DataFrame([count.keys(), count.values()]).T
-        data = data.sort([1], ascending=False)
-        # also for background
-        background = Counter(all_region_annotation_b)
-        background = pd.DataFrame([background.keys(), background.values()]).T
-        background = background.ix[data.index]  # same sort order as in the real data
-
-        # plot individually
-        fig, axis = plt.subplots(3, sharex=True, sharey=False)
-        sns.barplot(x=0, y=1, data=data, ax=axis[0])
-        sns.barplot(x=0, y=1, data=background, ax=axis[1])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((data[1] / background[1]).astype(float))]).T, ax=axis[2])
-        axis[0].set_title("ATAC-seq peaks")
-        axis[1].set_title("genome background")
-        axis[2].set_title("peaks over background")
-        axis[1].set_xlabel("genomic region")
-        axis[2].set_xlabel("genomic region")
-        axis[0].set_ylabel("frequency")
-        axis[1].set_ylabel("frequency")
-        axis[2].set_ylabel("fold-change")
-        fig.autofmt_xdate()
-        fig.tight_layout()
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.genomic_regions.svg"), bbox_inches="tight")
-        plt.close("all")
-
-        # # Plot chromatin states
-        # get long list of chromatin states (for plotting)
-        all_chrom_state_annotation = [item for sublist in self.chrom_state_annotation['chromatin_state'].apply(lambda x: x.split(",")) for item in sublist]
-        all_chrom_state_annotation_b = [item for sublist in self.chrom_state_annotation_b['chromatin_state'].apply(lambda x: x.split(",")) for item in sublist]
-
-        # count region frequency
-        count = Counter(all_chrom_state_annotation)
-        data = pd.DataFrame([count.keys(), count.values()]).T
-        data = data.sort([1], ascending=False)
-        # also for background
-        background = Counter(all_chrom_state_annotation_b)
-        background = pd.DataFrame([background.keys(), background.values()]).T
-        background = background.ix[data.index]  # same sort order as in the real data
-
-        fig, axis = plt.subplots(3, sharex=True, sharey=False)
-        sns.barplot(x=0, y=1, data=data, ax=axis[0])
-        sns.barplot(x=0, y=1, data=background, ax=axis[1])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((data[1] / background[1]).astype(float))]).T, ax=axis[2])
-        axis[0].set_title("ATAC-seq peaks")
-        axis[1].set_title("genome background")
-        axis[2].set_title("peaks over background")
-        axis[1].set_xlabel("chromatin state")
-        axis[2].set_xlabel("chromatin state")
-        axis[0].set_ylabel("frequency")
-        axis[1].set_ylabel("frequency")
-        axis[2].set_ylabel("fold-change")
-        fig.autofmt_xdate()
-        fig.tight_layout()
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.chromatin_states.svg"), bbox_inches="tight")
-
-        # distribution of count attributes
-        data = self.coverage_qnorm_annotated.copy()
-
-        fig, axis = plt.subplots(1)
-        sns.distplot(data["mean"], rug=False, ax=axis)
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.mean.distplot.svg"), bbox_inches="tight")
-
-        fig, axis = plt.subplots(1)
-        sns.distplot(data["qv2"], rug=False, ax=axis)
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.qv2.distplot.svg"), bbox_inches="tight")
-
-        fig, axis = plt.subplots(1)
-        sns.distplot(data["dispersion"], rug=False, ax=axis)
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.dispersion.distplot.svg"), bbox_inches="tight")
-
-        # this is loaded now
-        df = pd.read_csv(os.path.join(self.data_dir, "mthfd1_peaks.support.csv"))
-        fig, axis = plt.subplots(1)
-        sns.distplot(df["support"], rug=False, ax=axis)
-        sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "mthfd1.support.distplot.svg"), bbox_inches="tight")
-
-        plt.close("all")
-
-    def plot_coverage(self):
-        data = self.coverage_qnorm_annotated.copy()
-        # (rewrite to avoid putting them there in the first place)
-        variables = ['gene_name', 'genomic_region', 'chromatin_state']
-
-        for variable in variables:
-            d = data[variable].str.split(',').apply(pd.Series).stack()  # separate comma-delimited fields
-            d.index = d.index.droplevel(1)  # returned a multiindex Series, so get rid of second index level (first is from original row)
-            data = data.drop([variable], axis=1)  # drop original column so there are no conflicts
-            d.name = variable
-            data = data.join(d)  # joins on index
-
-        variables = [
-            'chrom', 'start', 'end',
-            'ensembl_transcript_id', 'distance', 'ensembl_gene_id', 'support',
-            'mean', 'variance', 'std_deviation', 'dispersion', 'qv2',
-            'amplitude', 'gene_name', 'genomic_region', 'chromatin_state']
-        # Plot
-        data_melted = pd.melt(
-            data,
-            id_vars=variables, var_name="sample", value_name="norm_counts")
-
-        # transform dispersion
-        data_melted['dispersion'] = np.log2(1 + data_melted['dispersion'])
-
-        # Together in same violin plot
-        fig, axis = plt.subplots(1)
-        sns.violinplot("genomic_region", "norm_counts", data=data_melted, ax=axis)
-        fig.savefig(os.path.join(self.results_dir, "norm_counts.per_genomic_region.violinplot.png"), bbox_inches="tight", dpi=300)
-
-        # dispersion
-        fig, axis = plt.subplots(1)
-        sns.violinplot("genomic_region", "dispersion", data=data_melted, ax=axis)
-        fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.per_genomic_region.violinplot.png"), bbox_inches="tight", dpi=300)
-
-        # dispersion
-        fig, axis = plt.subplots(1)
-        sns.violinplot("genomic_region", "qv2", data=data_melted, ax=axis)
-        fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.per_genomic_region.violinplot.png"), bbox_inches="tight", dpi=300)
-
-        fig, axis = plt.subplots(1)
-        sns.violinplot("chromatin_state", "norm_counts", data=data_melted, ax=axis)
-        fig.savefig(os.path.join(self.results_dir, "norm_counts.chromatin_state.violinplot.png"), bbox_inches="tight", dpi=300)
-
-        fig, axis = plt.subplots(1)
-        sns.violinplot("chromatin_state", "dispersion", data=data_melted, ax=axis)
-        fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.chromatin_state.violinplot.png"), bbox_inches="tight", dpi=300)
-
-        fig, axis = plt.subplots(1)
-        sns.violinplot("chromatin_state", "qv2", data=data_melted, ax=axis)
-        fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.chromatin_state.violinplot.png"), bbox_inches="tight", dpi=300)
-
-        # separated by variable in one grid
-        g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
-        g.map(sns.distplot, "mean", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.mean.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
-        g.map(sns.distplot, "dispersion", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
-        g.map(sns.distplot, "qv2", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
-        g.map(sns.distplot, "support", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.support.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
-        g.map(sns.distplot, "mean", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.mean.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
-        g.map(sns.distplot, "dispersion", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
-        g.map(sns.distplot, "qv2", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
-        g.map(sns.distplot, "support", hist=False, rug=False)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.support.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
-        plt.close("all")
-
-    def plot_variance(self, samples):
-
-        g = sns.jointplot('mean', "dispersion", data=self.coverage_qnorm_annotated, kind="kde")
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.dispersion.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.jointplot('mean', "qv2", data=self.coverage_qnorm_annotated)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.qv2_vs_mean.png"), bbox_inches="tight", dpi=300)
-
-        g = sns.jointplot('support', "qv2", data=self.coverage_qnorm_annotated)
-        g.fig.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.support_vs_qv2.png"), bbox_inches="tight", dpi=300)
-
-        # Filter out regions which the maximum across all samples is below a treshold
-        filtered = self.coverage_qnorm_annotated[self.coverage_qnorm_annotated[[sample.name for sample in samples]].max(axis=1) > 3]
-
-        sns.jointplot('mean', "dispersion", data=filtered)
-        plt.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.dispersion.filtered.png"), bbox_inches="tight", dpi=300)
-        plt.close('all')
-        sns.jointplot('mean', "qv2", data=filtered)
-        plt.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.support_vs_qv2.filtered.png"), bbox_inches="tight", dpi=300)
-
-
-def add_args(parser):
-    """
-    Options for project and pipelines.
-    """
-    # Behaviour
-    parser.add_argument("-g", "--generate", dest="stats", action="store_true",
-                        help="Should we generate data and plots? Default=False")
-
-    return parser
-
-
-def count_reads_in_intervals(bam, intervals):
-    """
-    Counts total number of reads in a iterable holding strings
-    representing genomic intervals of the type chrom:start-end.
-    """
-    counts = dict()
-
-    bam = pysam.AlignmentFile(bam, mode='rb')
-
-    chroms = ["chr" + str(x) for x in range(1, 23)] + ["chrX", "chrY"]
-
-    for interval in intervals:
-        if interval.split(":")[0] not in chroms:
-            continue
-        counts[interval] = bam.count(region=interval.split("|")[0])
-    bam.close()
-
-    return counts
-
-
-def extend_sites_to_minimum(sites, genome="hg19", min_width=1000):
-    """Extend sites smaller than `min_width`"""
-
-    # get center
-    tmpsites = sites.to_dataframe()
-    tmpsites["width"] = tmpsites.apply(lambda x: int(x['end']) - int(x['start']), axis=1)
-    tmpsites["new_start"] = tmpsites['start'] + (tmpsites['width'] / 2.).astype(np.int64)
-    tmpsites["new_end"] = tmpsites["new_start"] + 1
-
-    # intermediate save of smaller
-    tmpsites[tmpsites["width"] < min_width][['chrom', 'new_start', 'new_end']].to_csv("tmp.bed", sep="\t", header=None, index=False)
-
-    # extend
-    extended_sites = pybedtools.BedTool("tmp.bed").slop(b=min_width / 2, genome=genome).to_dataframe()
-    extended_sites = extended_sites.append(tmpsites[tmpsites["width"] >= min_width][['chrom', 'start', 'end']])
-    extended_sites.to_csv("tmp.bed", sep="\t", header=None, index=False)
-
-    # overwrite assignment and bed file
-    return pybedtools.BedTool("tmp.bed").sort()
-
-
-def normalize_quantiles_r(array):
-    # install package
-    # R
-    # source('http://bioconductor.org/biocLite.R')
-    # biocLite('preprocessCore')
-
-    import rpy2.robjects as robjects
-    import rpy2.robjects.numpy2ri
-    rpy2.robjects.numpy2ri.activate()
-
-    robjects.r('require("preprocessCore")')
-    normq = robjects.r('normalize.quantiles')
-    return np.array(normq(array))
-
-
-def pca_r(x, colors, output_pdf):
-    import rpy2.robjects as robj
-    import pandas.rpy.common as com
-
-    # save csvs for pca
-    pd.DataFrame(x).T.to_csv('pca_file.csv', index=False)
-    pd.Series(colors).to_csv('colors.csv', index=False)
-
-    result = com.convert_robj(robj.r("""
-    df = read.csv('pca_file.csv')
-
-    colors = read.csv('colors.csv', header=FALSE)
-
-    df.pca <- prcomp(df,
-                     center = TRUE,
-                     scale. = TRUE)
-    return(df.pca)
-    """))
-    x = result['x']
-    variance = result['sdev']
-
-    # plot PC1 vs PC2
-    fig, axis = plt.subplots(nrows=1, ncols=2)
-    fig.set_figheight(10)
-    fig.set_figwidth(25)
-
-    # 1vs2 components
-    for i in range(1, x.shape[0] + 1):
-        axis[0].scatter(
-            x.loc[i, 'PC1'], x.loc[i, 'PC2'],
-            color=colors[i - 1],
-            s=50
-        )
-    axis[0].set_xlabel("PC1 - {0}% variance".format(variance[0]))
-    axis[0].set_ylabel("PC2 - {0}% variance".format(variance[1]))
-
-    # plot PC1 vs PC3
-    for i in range(1, x.shape[0] + 1):
-        axis[1].scatter(
-            x.loc[i, 'PC1'], x.loc[i, 'PC3'],
-            color=colors[i - 1],
-            s=50
-        )
-    axis[1].set_xlabel("PC1 - {0}% variance".format(variance[0]))
-    axis[1].set_ylabel("PC3 - {0}% variance".format(variance[2]))
-
-    fig.savefig(output_pdf, bbox_inches='tight')
-
-
-def lola(bed_files, universe_file, output_folder):
-    """
-    Performs location overlap analysis (LOLA) on bedfiles with regions sets.
-    """
-    import rpy2.robjects as robj
-
-    run = robj.r("""
-        function(bedFiles, universeFile, outputFolder) {
-            library("LOLA")
-
-            userUniverse  <- LOLA::readBed(universeFile)
-
-            dbPath1 = "/data/groups/lab_bock/shared/resources/regions/LOLACore/hg19/"
-            dbPath2 = "/data/groups/lab_bock/shared/resources/regions/customRegionDB/hg19/"
-            regionDB = loadRegionDB(c(dbPath1, dbPath2))
-
-            if (typeof(bedFiles) == "character") {
-                userSet <- LOLA::readBed(bedFiles)
-                lolaResults = runLOLA(list(userSet), userUniverse, regionDB, cores=12)
-                lolaResults[order(support, decreasing=TRUE), ]
-                writeCombinedEnrichment(lolaResults, outFolder=outputFolder)
-            } else if (typeof(bedFiles) == "double") {
-                for (bedFile in bedFiles) {
-                    userSet <- LOLA::readBed(bedFile)
-                    lolaResults = runLOLA(list(userSet), userUniverse, regionDB, cores=12)
-                    lolaResults[order(support, decreasing=TRUE), ]
-                    writeCombinedEnrichment(lolaResults, outFolder=outputFolder)
-                }
-            }
-        }
-    """)
-
-    # convert the pandas dataframe to an R dataframe
-    run(bed_files, universe_file, output_folder)
-
-    # for F in `find . -iname *_regions.bed`
-    # do
-    #     if  [ ! -f `dirname $F`/allEnrichments.txt ]; then
-    #         echo $F
-    #         sbatch -J LOLA_${F} -o ${F/_regions.bed/_lola.log} ~/run_LOLA.sh $F ~/projects/mthfd1/results/mthfd1_peaks.bed hg19 `dirname $F`
-    #     fi
-    # done
-
-
-def bed_to_fasta(bed_file, fasta_file):
-    # write name column
-    bed = pd.read_csv(bed_file, sep='\t', header=None)
-    bed['name'] = bed[0] + ":" + bed[1].astype(str) + "-" + bed[2].astype(str)
-    bed[1] = bed[1].astype(int)
-    bed[2] = bed[2].astype(int)
-    bed.to_csv(bed_file + ".tmp.bed", sep='\t', header=None, index=False)
-
-    # do enrichment
-    cmd = "twoBitToFa ~/resources/genomes/hg19/hg19.2bit -bed={0} {1}".format(bed_file + ".tmp.bed", fasta_file)
-
-    os.system(cmd)
-    # os.system("rm %s" % bed_file + ".tmp.bed")
-
-
-def meme_ame(input_fasta, output_dir, background_fasta=None):
-    # shuffle input in no background is provided
-    if background_fasta is None:
-        shuffled = input_fasta + ".shuffled"
-        cmd = """
-        fasta-dinucleotide-shuffle -c 1 -f {0} > {1}
-        """.format(input_fasta, shuffled)
-        os.system(cmd)
-
-    cmd = """
-    ame --bgformat 1 --scoring avg --method ranksum --pvalue-report-threshold 0.05 \\
-    --control {0} -o {1} {2} ~/resources/motifs/motif_databases/HUMAN/HOCOMOCOv10.meme
-    """.format(background_fasta if background_fasta is not None else shuffled, output_dir, input_fasta)
-    os.system(cmd)
-
-    os.system("rm %s" % shuffled)
-
-    # for F in `find . -iname *fa`
-    # do
-    #     if  [ ! -f `dirname $F`/ame.txt ]; then
-    #         echo $F
-    #         sbatch -J MEME-AME_${F} -o ${F/fa/ame.log} ~/run_AME.sh $F human
-    #     fi
-    # done
-
-
-def parse_ame(ame_dir):
-
-    with open(os.path.join(ame_dir, "ame.txt"), 'r') as handle:
-        lines = handle.readlines()
-
-    output = list()
-    for line in lines:
-        # skip header lines
-        if line[0] not in [str(i) for i in range(10)]:
-            continue
-
-        # get motif string and the first half of it (simple name)
-        motif = line.strip().split(" ")[5].split("_")[0]
-        # get corrected p-value
-        q_value = float(line.strip().split(" ")[-2])
-        # append
-        output.append((motif, q_value))
-
-    return pd.Series(dict(output))
-
-
-def enrichr(dataframe, gene_set_libraries=None, kind="genes"):
-    """
-    Use Enrichr on a list of genes (currently only genes supported through the API).
-    """
-    import json
-    import requests
-
-    ENRICHR_ADD = 'http://amp.pharm.mssm.edu/Enrichr/addList'
-    ENRICHR_RETRIEVE = 'http://amp.pharm.mssm.edu/Enrichr/enrich'
-    query_string = '?userListId=%s&backgroundType=%s'
-
-    if gene_set_libraries is None:
-        gene_set_libraries = [
-            'GO_Biological_Process_2015',
-            "ChEA_2015",
-            "KEGG_2016",
-            "WikiPathways_2016",
-            "Reactome_2016",
-            "BioCarta_2016",
-            "NCI-Nature_2016"
-        ]
-
-    results = pd.DataFrame()
-    for gene_set_library in gene_set_libraries:
-        print("Using enricher on %s gene set library." % gene_set_library)
-
-        if kind == "genes":
-            # Build payload with bed file
-            attr = "\n".join(dataframe["gene_name"].dropna().tolist())
-        elif kind == "regions":
-            # Build payload with bed file
-            attr = "\n".join(dataframe[['chrom', 'start', 'end']].apply(lambda x: "\t".join([str(i) for i in x]), axis=1).tolist())
-
-        payload = {
-            'list': (None, attr),
-            'description': (None, gene_set_library)
-        }
-        # Request adding gene set
-        response = requests.post(ENRICHR_ADD, files=payload)
-        if not response.ok:
-            raise Exception('Error analyzing gene list')
-
-        # Track gene set ID
-        user_list_id = json.loads(response.text)['userListId']
-
-        # Request enriched sets in gene set
-        response = requests.get(
-            ENRICHR_RETRIEVE + query_string % (user_list_id, gene_set_library)
-        )
-        if not response.ok:
-            raise Exception('Error fetching enrichment results')
-
-        # Get enriched sets in gene set
-        res = json.loads(response.text)
-        # If there's no enrichemnt, continue
-        if len(res) < 0:
-            continue
-
-        # Put in dataframe
-        res = pd.DataFrame([pd.Series(s) for s in res[gene_set_library]])
-        if res.shape[0] == 0:
-            continue
-        res.columns = ["rank", "description", "p_value", "z_score", "combined_score", "genes", "adjusted_p_value"]
-
-        # Remember gene set library used
-        res["gene_set_library"] = gene_set_library
-
-        # Append to master dataframe
-        results = results.append(res, ignore_index=True)
-
-    return results
-
-    # for F in `find /home/arendeiro/projects/mthfd1/results -name "*symbols.txt"`
-    # do
-    #     if  [ ! -f ${F/symbols.txt/enrichr.csv} ]; then
-    #         echo $F
-    #         sbatch -J ENRICHR_${F} -o ${F/symbols.txt/enrichr.log} ~/run_Enrichr.sh $F
-    #     fi
-    # done
-
-
-def characterize_regions_structure(df, prefix, output_dir, universe_df=None):
-    # use all sites as universe
-    if universe_df is None:
-        universe_df = pd.read_csv(os.path.join("results", "mthfd1_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
-
-    # make output dirs
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    # compare genomic regions and chromatin_states
-    enrichments = pd.DataFrame()
-    for i, var in enumerate(['genomic_region', 'chromatin_state']):
-        # prepare:
-        # separate comma-delimited fields:
-        df_count = Counter(df[var].str.split(',').apply(pd.Series).stack().tolist())
-        df_universe_count = Counter(universe_df[var].str.split(',').apply(pd.Series).stack().tolist())
-
-        # divide by total:
-        df_count = {k: v / float(len(df)) for k, v in df_count.items()}
-        df_universe_count = {k: v / float(len(universe_df)) for k, v in df_universe_count.items()}
-
-        # join data, sort by subset data
-        both = pd.DataFrame([df_count, df_universe_count], index=['subset', 'all']).T
-        both = both.sort("subset")
-        both['region'] = both.index
-        data = pd.melt(both, var_name="set", id_vars=['region']).replace(np.nan, 0)
-
-        # sort for same order
-        data.sort('region', inplace=True)
-
-        # g = sns.FacetGrid(col="region", data=data, col_wrap=3, sharey=True)
-        # g.map(sns.barplot, "set", "value")
-        # plt.savefig(os.path.join(output_dir, "%s_regions.%s.svg" % (prefix, var)), bbox_inches="tight")
-
-        fc = pd.DataFrame(np.log2(both['subset'] / both['all']), columns=['value'])
-        fc['variable'] = var
-
-        # append
-        enrichments = enrichments.append(fc)
-
-    # save
-    enrichments.to_csv(os.path.join(output_dir, "%s_regions.region_enrichment.csv" % prefix), index=True)
-
-
-def characterize_regions_function(df, output_dir, prefix, data_dir="data", universe_file=None):
-    # use all sites as universe
-    if universe_file is None:
-        universe_file = os.path.join(data_dir, "mthfd1_peaks.bed")
-
-    # make output dirs
+            data_type="ATAC-seq",
+            alpha=0.05,
+            corrected_p_value=True,
+            fold_change=None,
+            output_dir="results/differential_analysis_{data_type}",
+            output_prefix="differential_analysis_{}".format(cell_line))
+
+    atacseq_results = pd.DataFrame()
+    for comp in comparison_table["comparison_name"].drop_duplicates():
+        atacseq_results = atacseq_results.append(pd.read_csv(
+            os.path.join("results", "differential_analysis_ATAC-seq", "differential_analysis.deseq_result.{}.csv".format(comp)),
+            index_col=0).reset_index(), ignore_index=True)
+    atacseq_results = atacseq_results.set_index("index")
+    atacseq_results.to_csv(os.path.join("results", "differential_analysis_ATAC-seq", "differential_analysis" + ".deseq_result.all_comparisons.csv"), index=True)
+
+
+def get_gene_expression_data():
+    from pypiper import NGSTk
+    import textwrap
+    tk = NGSTk()
+
+    gene_exp_diff_file = "/scratch/lab_bsf/projects/BSA_0197_Compound_shRNA_/hg38/rnaseq_cuffdiff_global/gene_exp.diff"
+    header = ["test_id", "gene_id", "gene", "locus", "sample_1", "sample_2", "status", "value_1", "value_2", "log2(fold_change)", "test_stat", "p_value", "q_value", "significant"]
+    output_dir = os.path.join("results", "gene_expression_cuffdiff")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # save to bed
-    bed_file = os.path.join(output_dir, "%s_regions.bed" % prefix)
-    df[['chrom', 'start', 'end']].to_csv(bed_file, sep="\t", header=False, index=False)
-    # save as tsv
-    tsv_file = os.path.join(output_dir, "%s_regions.tsv" % prefix)
-    df[['chrom', 'start', 'end']].reset_index().to_csv(tsv_file, sep="\t", header=False, index=False)
+    cell_lines = ['HAP1', 'A549', 'K562']
+    comparisons = [
+        ('DMSO_1h', 'JQ1_1h'),
+        ('DMSO_6h', 'JQ1_6h'),
+        ('DMSO_1h', 'JQMT_1h'),
+        ('DMSO_6h', 'JQMT_6h'),
+        ('DMSO_1h', 'MTX_1h'),
+        ('DMSO_6h', 'MTX_6h'),
+        ('DMSO_1h', 'dBet6_1h'),
+        ('DMSO_6h', 'dBet6_6h'),
+        ('shBRD4', 'shPLKO'),
+        ('shMTHBRD', 'shPLKO'),
+        ('shMTHFD1', 'shPLKO'),
+    ]
+    for cell_line in cell_lines:
+        for condition, control in comparisons:
+            a = "{}_{}".format(cell_line, control)
+            b = "{}_{}".format(cell_line, condition)
+            output_file = os.path.join(output_dir, "diff_expression.{}_vs_{}.csv".format(a, b))
 
-    # export ensembl gene names
-    df['gene_name'].str.split(",").apply(pd.Series, 1).stack().drop_duplicates().to_csv(os.path.join(output_dir, "%s_genes.symbols.txt" % prefix), index=False)
-    # export ensembl gene names
-    df['ensembl_gene_id'].str.split(",").apply(pd.Series, 1).stack().drop_duplicates().to_csv(os.path.join(output_dir, "%s_genes.ensembl.txt" % prefix), index=False)
+            cmd = tk.slurm_header(output_file, output_file + ".log", queue='shortq', n_tasks=1, time='4:00:00', cpus_per_task=1, mem_per_cpu=4000)
+            cmd += """grep -P "{}\\t{}" {} > {}\n""".format(a, b, gene_exp_diff_file, output_file)
+            output_file2 = os.path.join(output_dir, "diff_expression.{}_vs_{}.csv".format(b, a))
+            cmd += """\t\tgrep -P "{}\\t{}" {} > {}\n""".format(b, a, gene_exp_diff_file, output_file2)
+            cmd += tk.slurm_footer()
 
-    # Motifs
-    # de novo motif finding - enrichment
-    fasta_file = os.path.join(output_dir, "%s_regions.fa" % prefix)
-    bed_to_fasta(bed_file, fasta_file)
+            with open(output_file + ".sh", "w") as handle:
+                handle.writelines(textwrap.dedent(cmd))
+            tk.slurm_submit_job(output_file + ".sh")
 
-    meme_ame(fasta_file, output_dir)
+    # Colllect, label
+    df = pd.DataFrame()
+    for cell_line in cell_lines:
+        for condition, control in comparisons:
+            a = "{}_{}".format(cell_line, control)
+            b = "{}_{}".format(cell_line, condition)
+            output_file = os.path.join(output_dir, "diff_expression.{}_vs_{}.csv".format(b, a))
 
-    # Lola
-    try:
-        lola(bed_file, universe_file, output_dir)
-    except:
-        print("LOLA analysis for %s failed!" % prefix)
+            df2 = pd.read_csv(output_file, header=None, sep="\t", names=header)
+            df = df.append(df2[['gene', 'sample_1', 'sample_2', 'value_1', 'value_2', 'q_value', 'log2(fold_change)']], ignore_index=True)
+    df["comparison_name"] = (
+        pd.Series(map(lambda x: x[0], df['sample_1'].str.split("_"))) + "_" +
+        pd.Series(map(lambda x: x[1], df['sample_1'].str.split("_"))) + "_" +
+        pd.Series(map(lambda x: x[1], df['sample_2'].str.split("_"))))
+    df.to_csv(os.path.join(output_dir, "gene_exp.diff.relevant.csv"), index=False)
 
-    # Enrichr
-    results = enrichr(df[['chrom', 'start', 'end', "gene_name"]])
+    df['mean'] = np.log2(1 + df[['value_1', 'value_2']].mean(1))
+    df[df['q_value'] < 0.05].to_csv(os.path.join(output_dir, "gene_exp.diff.relevant.differential.csv"), index=False)
 
-    # Save
-    results.to_csv(os.path.join(output_dir, "%s_regions.enrichr.csv" % prefix), index=False, encoding='utf-8')
-
-
-def plot_region_types_per_sample(analysis):
-    # Plot region types per sample
-    g_fig, g_axis = plt.subplots(3, 1)
-    c_fig, c_axis = plt.subplots(3, 1)
-    for i, sample in enumerate([s for s in analysis.samples if s.ip != "IgG"]):
-        # Get regions specific to this sample
-        # based on support
-        index = analysis.support[analysis.support[sample.name] > 0].index
-
-        # Plot genomic regions
-        # these are just long lists with genomic regions
-        all_region_annotation = [item for sublist in analysis.region_annotation.ix[index]['genomic_region'].dropna().apply(lambda x: x.split(",")) for item in sublist]
-        all_region_annotation_b = [item for sublist in analysis.region_annotation_b['genomic_region'].dropna().apply(lambda x: x.split(",")) for item in sublist]
-
-        # count region frequency
-        count = Counter(all_region_annotation)
-        data = pd.DataFrame([count.keys(), count.values()]).T
-        data = data.sort_values([0])
-        # also for background
-        background = Counter(all_region_annotation_b)
-        background = pd.DataFrame([background.keys(), background.values()]).T
-        background = background.ix[data.index]  # same sort order as in the real data
-
-        # plot individually
-        fig, axis = plt.subplots(3, sharex=True, sharey=False)
-        sns.barplot(x=0, y=1, data=data, ax=axis[0])
-        sns.barplot(x=0, y=1, data=background, ax=axis[1])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((((data[1] / data[1].sum()) * 1000) / ((background[1] / background[1].sum()) * 1000)).astype(float))]).T, ax=axis[2])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((((data[1] / data[1].sum()) * 1000) / ((background[1] / background[1].sum()) * 1000)).astype(float))]).T, ax=g_axis[i])
-        axis[0].set_title("ATAC-seq peaks")
-        axis[1].set_title("genome background")
-        axis[2].set_title("peaks over background")
-        axis[1].set_xlabel("genomic region")
-        axis[2].set_xlabel("genomic region")
-        axis[0].set_ylabel("frequency")
-        axis[1].set_ylabel("frequency")
-        axis[2].set_ylabel("fold-change")
-        fig.autofmt_xdate()
-        fig.tight_layout()
-        sns.despine(fig)
-        fig.savefig(os.path.join(analysis.results_dir, "mthfd1.genomic_regions.{}.svg".format(sample.name)), bbox_inches="tight")
-        plt.close("all")
-
-        # # Plot chromatin states
-        # get long list of chromatin states (for plotting)
-        all_chrom_state_annotation = [item for sublist in analysis.chrom_state_annotation.ix[index]['chromatin_state'].dropna().apply(lambda x: x.split(",")) for item in sublist]
-        all_chrom_state_annotation_b = [item for sublist in analysis.chrom_state_annotation_b['chromatin_state'].dropna().apply(lambda x: x.split(",")) for item in sublist]
-
-        # count region frequency
-        count = Counter(all_chrom_state_annotation)
-        data = pd.DataFrame([count.keys(), count.values()]).T
-        data = data.sort_values([0])
-        # also for background
-        background = Counter(all_chrom_state_annotation_b)
-        background = pd.DataFrame([background.keys(), background.values()]).T
-        background = background.ix[data.index]  # same sort order as in the real data
-
-        fig, axis = plt.subplots(3, sharex=True, sharey=False)
-        sns.barplot(x=0, y=1, data=data, ax=axis[0])
-        sns.barplot(x=0, y=1, data=background, ax=axis[1])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((((data[1] / data[1].sum()) * 1000) / ((background[1] / background[1].sum()) * 1000)).astype(float))]).T, ax=axis[2])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((((data[1] / data[1].sum()) * 1000) / ((background[1] / background[1].sum()) * 1000)).astype(float))]).T, ax=c_axis[i])
-        axis[0].set_title("ATAC-seq peaks")
-        axis[1].set_title("genome background")
-        axis[2].set_title("peaks over background")
-        axis[1].set_xlabel("chromatin state")
-        axis[2].set_xlabel("chromatin state")
-        axis[0].set_ylabel("frequency")
-        axis[1].set_ylabel("frequency")
-        axis[2].set_ylabel("fold-change")
-        fig.autofmt_xdate()
-        fig.tight_layout()
-        sns.despine(fig)
-        fig.savefig(os.path.join(analysis.results_dir, "mthfd1.chromatin_states.{}.svg".format(sample.name)), bbox_inches="tight")
-
-        g_axis[i].set_ylabel(sample.name)
-        c_axis[i].set_ylabel(sample.name)
-
-    g_fig.savefig(os.path.join(analysis.results_dir, "mthfd1.genomic_regions.all.svg"), bbox_inches="tight")
-    c_fig.savefig(os.path.join(analysis.results_dir, "mthfd1.chromatin_states.all.svg"), bbox_inches="tight")
+    return df
 
 
 def main():
-    # Start project
-    prj = Project("metadata/project_config.yaml")
-    prj.add_sample_sheet()
+    from ngs_toolkit.atacseq import ATACSeqAnalysis
+    from ngs_toolkit.chipseq import ChIPSeqAnalysis
+    from ngs_toolkit.chipseq import homer_peaks_to_bed
+    from ngs_toolkit.general import bed_to_fasta, homer_motifs, meme_ame
 
-    # temporary:
+    # Start project and analysis objects
+    prj = Project(os.path.join("metadata", "project_config.yaml"))
     for sample in prj.samples:
-        sample.peaks = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_peaks.narrowPeak")
         sample.mapped = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.bam")
         sample.filtered = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
-        sample.coverage = os.path.join(sample.paths.sample_root, "coverage", sample.name + ".cov")
+    analysis = ChIPSeqAnalysis(name="mthfd1", prj=prj, samples=prj.samples)
 
-    # Start analysis object
-    to_include = [
-        "HAP1_ChIPmentation_MTHFD1_C3_WT",
-        "HAP1_ChIPmentation_BRD4_WT",
-        "HAP1_ChIPmentation_H3K27ac_WT",
-        "HAP1_ChIPmentation_IgG_WT",
-    ]
-    prj.samples = [sample for sample in prj.samples if sample.name in to_include]
+    # read in comparison table
+    comparison_table = pd.read_csv(os.path.join("metadata", "comparison_table.csv"))
 
-    analysis = Analysis(prj=prj, samples=prj.samples)
-    analysis.prj = prj
+    analysis.call_peaks_from_comparisons(
+        comparison_table=comparison_table[comparison_table['comparison_type'] == 'peaks'], overwrite=False)
 
-    # GET CONSENSUS PEAK SET, ANNOTATE IT, PLOT FEATURES
-    # GET CHROMATIN OPENNESS MEASUREMENTS
-    # PLOT STUFF
-    comparisons = pd.read_csv(os.path.join("metadata", "comparison_table.csv"))
-    comparisons = comparisons[comparisons['comparison'].isin(to_include[:-1])]
-    comparisons['peaks'] = "data/peaks/" + comparisons['comparison'] + "_allctrls/" + comparisons['comparison'] + "_allctrls_peaks.narrowPeak"
-    # Get consensus peak set from all samples
-    analysis.get_consensus_sites_from_comparisons(comparisons, analysis.samples)
-    # Calculate peak support
-    analysis.calculate_peak_support(analysis, comparisons, analysis.samples, min_width=[(["H3K27ac"], 500), (["BRD4", "MTHFD1"], 500)])
-    # Annotate peaks with closest gene
-    analysis.get_peak_gene_annotation()
-    # Annotate peaks with genomic regions
-    analysis.get_peak_genomic_location()
-    # Annotate peaks with chromatin states (HAP1)
-    analysis.get_peak_chromatin_state()
+    # analysis.get_consensus_sites(
+    #     comparison_table=comparison_table[comparison_table['comparison_type'] == 'peaks'],
+    #     region_type="peaks", blacklist_bed="wgEncodeDacMapabilityConsensusExcludable.bed")
 
-    # WORK WITH "OPENNESS"
-    # Get coverage values for each peak in each sample
-    analysis.measure_coverage(analysis.samples)
-    # normalize coverage values
-    analysis.normalize_coverage_quantiles(analysis.samples)
-    # Annotate peaks with closest gene, chromatin state,
-    # genomic location, mean and variance measurements across samples
-    analysis.annotate(analysis.samples)
+    # analysis.calculate_peak_support(
+    #     comparison_table=comparison_table[comparison_table['comparison_type'] == 'peaks'])
 
-    # Plots
-    # plot general peak set features
-    analysis.plot_peak_characteristics()
-    # Plot rpkm features across peaks/samples
-    analysis.plot_coverage()
-    analysis.plot_variance(analysis.samples)
+    # # # Select only peaks called in all H3K27ac comparisons
+    # # sup = analysis.support.loc[:, analysis.support.columns.str.contains("H3K27ac")].sum(axis=1)
+    # # analysis.support.loc[sup == analysis.support.columns.str.contains("H3K27ac").sum(), :].index
 
-    # Characterize all regions as a whole
+    diffbind_annotation = pd.read_csv("metadata/diffBind_design.csv")
+    for _, row in diffbind_annotation.iterrows():
+        signal_sample = [s for s in analysis.samples if s.name == row["SampleID"]][0]
+        control_sample = [s for s in analysis.samples if s.name == row["ControlID"]][0]
+        # homer_call_chipseq_peak_job(
+        #     signal_samples=[signal_sample], control_samples=[control_sample],
+        #     output_dir=os.path.join(signal_sample.paths.sample_root, "peaks"), name=row["SampleID"])
 
-    # Overlap
-    from scipy.stats import fisher_exact
-    h3k4me3 = analysis.support[analysis.support['HAP1_ChIPmentation_H3K27ac_WT'] > 0]
-    brd4 = analysis.support[analysis.support['HAP1_ChIPmentation_BRD4_WT'] > 0]
-    mthfd1 = analysis.support[analysis.support['HAP1_ChIPmentation_MTHFD1_C3_WT'] > 0]
-    table = [
-        [(brd4['HAP1_ChIPmentation_MTHFD1_C3_WT'] > 0).sum(), (brd4['HAP1_ChIPmentation_MTHFD1_C3_WT'] == 0).sum()],  # BRD4: overlap, non-overlaping
-        [(mthfd1['HAP1_ChIPmentation_BRD4_WT'] > 0).sum(), (mthfd1['HAP1_ChIPmentation_BRD4_WT'] == 0).sum()]   # MTHFD1: overlap, non-overlaping
-    ]
-    print(fisher_exact(table))
+        file = os.path.join(signal_sample.paths.sample_root, "peaks", row["SampleID"], row["SampleID"] + "_homer_peaks.")
+        homer_peaks_to_bed(file + "narrowPeak", file + "bed")
 
-    # proximity
-    from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
-    brd4 = pybedtools.BedTool(os.path.join(analysis.results_dir, "HAP1_ChIPmentation_BRD4_WT", "HAP1_ChIPmentation_BRD4_WT_regions.bed"))
-    mthfd1 = pybedtools.BedTool(os.path.join(analysis.results_dir, "HAP1_ChIPmentation_MTHFD1_C3_WT", "HAP1_ChIPmentation_MTHFD1_C3_WT_regions.bed"))
+    # # Get coverage
+    # analysis.measure_coverage()
 
-    closest = mthfd1.closest(brd4, d=True)
+    # cov = analysis.coverage.loc[:, analysis.coverage.columns.str.contains("ChIP-seq")]
+    # cov_tpm = np.log2(0.1 + (cov / cov.sum(axis=0)) * 1e6)
 
-    s = pd.Series(Counter(closest.to_dataframe()['thickStart']))
+    # from ngs_toolkit.general import normalize_quantiles_r
+    # coverage_qnorm = pd.DataFrame(
+    #     normalize_quantiles_r(cov_tpm.values),
+    #     index=cov_tpm.index,
+    #     columns=cov_tpm.columns
+    # )
 
-    dists = dict()
-    for i in range(1000):
-        dists[i] = s[s.index < i * 1000].sum() / float(s.sum())
+    # # BRD4 vs MTHFD1
+    # samples <- read.csv("metadata/diffBind_design.csv")
+    # samples["Peaks"] <- samples["ReplicatePeaks"]
+    # comparison <- "MTHFD1_vs_BRD4"
+    # diffbind_factors <- dba(sampleSheet=samples[samples["Condition"] == "DMSO", ])
+    # diffbind_factors <- dba.count(diffbind_factors, bCorPlot=FALSE)
+    # diffbind_factors <- dba.contrast(diffbind_factors, categories=DBA_FACTOR, block=DBA_REPLICATE, minMembers=2)
+    # diffbind_factors <- dba.analyze(diffbind_factors, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    # diffbind_factors.DB <- dba.report(diffbind_factors, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    # write.table(as.data.frame(diffbind_factors.DB), paste("results/diffbind_analysis.replicate_peaks", comparison, "differential.csv", sep="."), sep=",", row.names=FALSE)
 
-    fig, axis = plt.subplots(1)
-    axis.plot(dists.keys(), dists.values())
-    axis.set_xlabel("Distance to nearest BRD4 peak (kb)")
-    axis.set_ylabel("Fraction of total MTHFD1 peaks (n = {})".format(len(mthfd1)))
-    ax = zoomed_inset_axes(axis, zoom=5, loc=4, axes_kwargs={"aspect": 100, "xlim": (0, 50), "ylim": (0, 0.5)})
-    ax.plot(dists.keys(), dists.values())
+    # samples <- read.csv("metadata/diffBind_design.csv")
+    # samples["Peaks"] <- samples["H3K27acPeaks"]
+    # comparison <- "MTHFD1_vs_BRD4"
+    # diffbind_factors <- dba(sampleSheet=samples[samples["Condition"] == "DMSO", ])
+    # diffbind_factors <- dba.count(diffbind_factors, bCorPlot=FALSE)
+    # diffbind_factors <- dba.contrast(diffbind_factors, categories=DBA_FACTOR, block=DBA_REPLICATE, minMembers=2)
+    # diffbind_factors <- dba.analyze(diffbind_factors, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    # diffbind_factors.DB <- dba.report(diffbind_factors, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    # write.table(as.data.frame(diffbind_factors.DB), paste("results/diffbind_analysis.H3K27ac_peaks", comparison, "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+    # # dBET treatment
+    # library("DiffBind")
+    # samples <- read.csv("metadata/diffBind_design.csv")
+    # samples["Peaks"] <- samples["ReplicatePeaks"]
+    # ip <- "BRD4"
+    # diffbind_brd4 <- dba(sampleSheet=samples[samples["Factor"] == ip, ])
+    # diffbind_brd4 <- dba.count(diffbind_brd4, bCorPlot=FALSE)
+    # diffbind_brd4 <- dba.contrast(diffbind_brd4, categories=DBA_CONDITION, block=DBA_REPLICATE, minMembers=2)
+    # diffbind_brd4 <- dba.analyze(diffbind_brd4, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    # diffbind_brd4.DB <- dba.report(diffbind_brd4, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    # write.table(as.data.frame(diffbind_brd4.DB), paste("results/diffbind_analysis.replicate_peaks", ip, "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+    # ip <- "MTHFD1"
+    # diffbind_mthfd1 <- dba(sampleSheet=samples[samples["Factor"] == ip, ])
+    # diffbind_mthfd1 <- dba.count(diffbind_mthfd1, bCorPlot=FALSE)
+    # diffbind_mthfd1 <- dba.contrast(diffbind_mthfd1, categories=DBA_CONDITION, block=DBA_REPLICATE, minMembers=2)
+    # diffbind_mthfd1 <- dba.analyze(diffbind_mthfd1, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    # diffbind_mthfd1.DB <- dba.report(diffbind_mthfd1, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    # write.table(as.data.frame(diffbind_mthfd1.DB), paste("results/diffbind_analysis.replicate_peaks", ip, "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+    # samples <- read.csv("metadata/diffBind_design.csv")
+    # samples["Peaks"] <- samples["ComparisonPeaks"]
+    # ip <- "BRD4"
+    # diffbind_brd4 <- dba(sampleSheet=samples[samples["Factor"] == ip, ])
+    # diffbind_brd4 <- dba.count(diffbind_brd4, bCorPlot=FALSE)
+    # diffbind_brd4 <- dba.contrast(diffbind_brd4, categories=DBA_CONDITION, block=DBA_REPLICATE, minMembers=2)
+    # diffbind_brd4 <- dba.analyze(diffbind_brd4, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    # diffbind_brd4.DB <- dba.report(diffbind_brd4, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    # write.table(as.data.frame(diffbind_brd4.DB), paste("results/diffbind_analysis.comparison_peaks", ip, "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+    # ip <- "MTHFD1"
+    # diffbind_mthfd1 <- dba(sampleSheet=samples[samples["Factor"] == ip, ])
+    # diffbind_mthfd1 <- dba.count(diffbind_mthfd1, bCorPlot=FALSE)
+    # diffbind_mthfd1 <- dba.contrast(diffbind_mthfd1, categories=DBA_CONDITION, block=DBA_REPLICATE, minMembers=2)
+    # diffbind_mthfd1 <- dba.analyze(diffbind_mthfd1, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    # diffbind_mthfd1.DB <- dba.report(diffbind_mthfd1, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    # write.table(as.data.frame(diffbind_mthfd1.DB), paste("results/diffbind_analysis.comparison_peaks", ip, "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+    # dBET treatment
+    samples <- read.csv("metadata/diffBind_design.csv")
+    samples["Peaks"] <- samples["H3K27acPeaks"]
+    ip <- "BRD4"
+    diffbind_brd4 <- dba(sampleSheet=samples[samples["Factor"] == ip, ])
+    diffbind_brd4 <- dba.count(diffbind_brd4, bCorPlot=FALSE)
+    diffbind_brd4 <- dba.contrast(diffbind_brd4, categories=DBA_CONDITION, block=DBA_REPLICATE, minMembers=2)
+    diffbind_brd4 <- dba.analyze(diffbind_brd4, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    diffbind_brd4.DB <- dba.report(diffbind_brd4, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    write.table(as.data.frame(diffbind_brd4.DB), paste("results/diffbind_analysis.H3K27ac_peaks", ip, "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+    ip <- "MTHFD1"
+    diffbind_mthfd1 <- dba(sampleSheet=samples[samples["Factor"] == ip, ])
+    diffbind_mthfd1 <- dba.count(diffbind_mthfd1, bCorPlot=FALSE)
+    diffbind_mthfd1 <- dba.contrast(diffbind_mthfd1, categories=DBA_CONDITION, block=DBA_REPLICATE, minMembers=2)
+    diffbind_mthfd1 <- dba.analyze(diffbind_mthfd1, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    diffbind_mthfd1.DB <- dba.report(diffbind_mthfd1, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    write.table(as.data.frame(diffbind_mthfd1.DB), paste("results/diffbind_analysis.H3K27ac_peaks", ip, "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+
+    # Curate peaks and get top N
+    n = 500
+
+    for factor in ["BRD4", "MTHFD1"]:
+        output_bed = os.path.join("results", "diffbind_analysis.H3K27ac_peaks.{}.differential.top{}.bed".format(factor, 100))
+        diff = pd.read_csv(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.{}.differential.csv".format(factor)))
+        diff['name'] = diff['seqnames'] + ":" + diff['start'].astype(str) + "-" + diff['end'].astype(str)
+        diff['score'] = -np.log10(diff['p.value'])
+        diff.sort_values('score', ascending=False)[['seqnames', 'start', 'end', 'name', 'score']].head(n).to_csv(output_bed, sep="\t", header=None, index=False)
+        cmd = "bedtools intersect -v -a {} -b {} > {}".format(
+            output_bed, os.path.join("data", "external", "wgEncodeDacMapabilityConsensusExcludable.bed"), output_bed + 'no_blacklist.bed')
+        os.system(cmd)
+
+    # Plot pvalue of BRD4 changing regions vs MTHFD1
+    brd4 = pd.read_csv(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.{}.differential.csv".format("BRD4")))
+    mthfd1 = pd.read_csv(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.{}.differential.csv".format("MTHFD1")))
+    brd4['-log_pvalue'] = -np.log10(brd4['p.value'])
+    mthfd1['-log_pvalue'] = -np.log10(mthfd1['p.value'])
+
+    fig, axis = plt.subplots(2, 2, figsize=(2 * 3, 2 * 3))
+    axis[0, 1].scatter(brd4['-log_pvalue'], mthfd1['-log_pvalue'], alpha=0.5, s=2, rasterized=True)
+    lim_max = max(brd4['-log_pvalue'].max(), mthfd1['-log_pvalue'].max())
+    axis[0, 1].plot((0, lim_max), (0, lim_max), linestyle="--", color="black", alpha=0.5)
+    axis[0, 1].set_xlim((0, lim_max))
+    axis[0, 1].set_ylim((0, lim_max))
+    axis[0, 1].set_xlabel("BRD4")
+    axis[0, 1].set_ylabel("MTHFD1")
+
+    sns.distplot(brd4['-log_pvalue'], ax=axis[0, 0], kde=False)
+    lim_max = max(brd4['-log_pvalue'].max(), mthfd1['-log_pvalue'].max())
+    axis[0, 0].set_xlim((0, lim_max))
+    sns.distplot(mthfd1['-log_pvalue'], ax=axis[1, 1], kde=False)
+    lim_max = max(mthfd1['-log_pvalue'].max(), mthfd1['-log_pvalue'].max())
+    axis[1, 1].set_xlim((0, lim_max))
     sns.despine(fig)
-    fig.savefig(os.path.join(analysis.results_dir, "mthfd1_brd4.distances.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.BRD4_vs_MTHFD1.-log_pvalue.svg"), bbox_inches="tight", dpi=300)
 
-    # visuzalize gene-relative coverage
-    with open("config.txt", "w") as handle:
-        for sample in analysis.samples[:2] + [analysis.samples[-1]]:
-            handle.write("\t".join([sample.filtered, "-1", sample.name + "\n"]))
+    # Plot fold-change of BRD4 changing regions vs MTHFD1
+    fig, axis = plt.subplots(2, 2, figsize=(2 * 3, 2 * 3))
+    axis[0, 1].scatter(brd4['Fold'], mthfd1['Fold'], alpha=0.1, s=2, rasterized=True)
+    lim_min = min(brd4['Fold'].min(), mthfd1['Fold'].min())
+    lim_max = max(brd4['Fold'].max(), mthfd1['Fold'].max())
+    axis[0, 1].plot((lim_min, lim_max), (lim_min, lim_max), linestyle="--", color="black", alpha=0.5)
+    axis[0, 1].set_xlim((lim_min, lim_max))
+    axis[0, 1].set_ylim((lim_min, lim_max))
+    axis[0, 1].set_xlabel("BRD4")
+    axis[0, 1].set_ylabel("MTHFD1")
 
-    cmd = "ngs.plot.r -G hg19 -R genebody -L 3000 -C config.txt -O genebody_coverage -GO km"
-    cmd = "ngs.plot.r -G hg19 -R genebody -C config.txt -O average_profile_coverage -D ensembl -FL 3000"
+    sns.distplot(brd4['Fold'], ax=axis[0, 0], kde=False)
+    lim_max = max(brd4['Fold'].max(), mthfd1['Fold'].max())
+    axis[0, 0].set_xlim((lim_min, lim_max))
+    sns.distplot(mthfd1['Fold'], ax=axis[1, 1], kde=False)
+    lim_max = max(mthfd1['Fold'].max(), mthfd1['Fold'].max())
+    axis[1, 1].set_xlim((lim_min, lim_max))
+    sns.despine(fig)
+    fig.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.BRD4_vs_MTHFD1.fold_change.svg"), bbox_inches="tight", dpi=300)
+    
+    # Combine data, plot heatmap of changes in both sets of changing regions
+    brd4.index = brd4['seqnames'] + ":" + brd4['start'].astype(str) + "-" + brd4['end'].astype(str)
+    mthfd1.index = mthfd1['seqnames'] + ":" + mthfd1['start'].astype(str) + "-" + mthfd1['end'].astype(str)
+    occ = brd4.join(mthfd1, lsuffix="_brd4", rsuffix="_mthfd1")
+    g = sns.clustermap(
+        occ.loc[
+            occ.sort_values("-log_pvalue_mthfd1").tail(500).index.tolist() + 
+            occ.sort_values("-log_pvalue_brd4").tail(500).index.tolist(),
+            ["Conc_DMSO_brd4", "Conc_dBET_brd4", "Conc_DMSO_mthfd1", "Conc_dBET_mthfd1"]
+        ], cmap="inferno", vmin=0, robust=True, metric="correlation", yticklabels=False, figsize=(4, 4), rasterized=True
+    )
+    g.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500_both_factors.diffbind_values.clustermap.svg"), bbox_inches="tight", dpi=300)
 
-    # Only H3K27ac/BRD4/MTHFD1-bound (or proximity) peaks
-    with open("config.txt", "w") as handle:
-        for sample1 in prj.samples:
-            for sample2 in prj.samples[:2] + [prj.samples[-1]]:
-                handle.write(
-                    "\t".join([
-                        sample1.filtered,
-                        os.path.join("results", sample2.name, sample2.name + "_genes.ensembl.txt"),
-                        "{}_signal_on_{}_peaks".format(sample1.name, sample2.name) + "\n"]))
+    # Enrichment in the two sets of changing regions
+    occ_enr = pd.DataFrame(columns=['ip', 'condition', 'region_set', 'enrichment', 'index'])
+    for ip in ["BRD4", "MTHFD1"]:
+        for condition in ['DMSO', "dBET"]:
+            for region_set in ["MTHFD1", "BRD4"]:
+                e = occ.loc[occ.sort_values("-log_pvalue_{}".format(region_set.lower())).tail(500).index.tolist(), "Conc_{}_{}".format(condition, ip.lower())].to_frame(name="enrichment").reset_index()
+                e['ip'] = ip
+                e['condition'] = condition
+                e['region_set'] = region_set
+                occ_enr = occ_enr.append(e)
 
-    cmd = "ngs.plot.r -G hg19 -R genebody -C config.txt -O average_profile_coverage_peakgenes -D ensembl -FL 3000"
+    g = sns.FacetGrid(data=occ_enr, col="region_set", row="ip", hue="condition")
+    g.map(sns.distplot, "enrichment")
+    g.add_legend()
+    g.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.diffbind_values.distplot.svg"), bbox_inches="tight", dpi=300)
+    g = sns.FacetGrid(data=occ_enr, col="region_set", row="ip", hue="condition")
+    g.map(sns.violinplot, "enrichment", orientation="vertical")
+    g.add_legend()
+    g.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.diffbind_values.violinplot.svg"), bbox_inches="tight", dpi=300)
+    g = sns.FacetGrid(data=occ_enr, row=["region_set", "ip"], hue="condition")
+    g.map(sns.violinplot, "enrichment", orientation="vertical")
+    g.add_legend()
+    g.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.diffbind_values.violinplot.svg"), bbox_inches="tight", dpi=300)
 
-    # Plot region types per sample
-    plot_region_types_per_sample(analysis)
+    fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 1 * 4))
+    sns.violinplot(x="ip", y="enrichment", hue="condition", data=occ_enr[occ_enr['region_set'] == "BRD4"], split=True, ax=axis[0])
+    axis[0].set_title("BRD4 regions")
+    sns.violinplot(x="ip", y="enrichment", hue="condition", data=occ_enr[occ_enr['region_set'] == "MTHFD1"], split=True, ax=axis[1])
+    axis[1].set_title("MTHFD1 regions")
+    sns.despine(fig)
+    fig.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.diffbind_values.violinplot.separate.svg"), bbox_inches="tight", dpi=300)
+    fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 1 * 4))
+    sns.boxplot(x="ip", y="enrichment", hue="condition", data=occ_enr[occ_enr['region_set'] == "BRD4"], ax=axis[0])
+    axis[0].set_title("BRD4 regions")
+    sns.boxplot(x="ip", y="enrichment", hue="condition", data=occ_enr[occ_enr['region_set'] == "MTHFD1"], ax=axis[1])
+    axis[1].set_title("MTHFD1 regions")
+    sns.despine(fig)
+    fig.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.diffbind_values.boxplot.separate.svg"), bbox_inches="tight", dpi=300)
+    fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 1 * 4))
+    sns.barplot(x="ip", y="enrichment", hue="condition", data=occ_enr[occ_enr['region_set'] == "BRD4"], ax=axis[0])
+    axis[0].set_title("BRD4 regions")
+    sns.barplot(x="ip", y="enrichment", hue="condition", data=occ_enr[occ_enr['region_set'] == "MTHFD1"], ax=axis[1])
+    axis[1].set_title("MTHFD1 regions")
+    sns.despine(fig)
+    fig.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.diffbind_values.barplot.separate.svg"), bbox_inches="tight", dpi=300)
 
-    # Get functional
-    analysis.support.index = analysis.support["chrom"] + ":" + analysis.support['start'].astype(str) + "-" + analysis.support['end'].astype(str)
-    analysis.coverage_qnorm_annotated['start'] = analysis.coverage_qnorm_annotated['start'].astype(int)
-    analysis.coverage_qnorm_annotated['end'] = analysis.coverage_qnorm_annotated['end'].astype(int)
+    # LOLA enrichments
+    library("LOLA")
+    genome = "hg19"
+    dbPath1 = paste0("/data/groups/lab_bock/shared/resources/regions/LOLACore/", genome)
+    dbPath2 = paste0("/data/groups/lab_bock/shared/resources/regions/customRegionDB/", genome)
+    bed_file <- "/home/arendeiro/projects/mthfd1/results/all_diff.bed"
+    universe_file <- "/home/arendeiro/projects/mthfd1/results/chipseq_peaks/H3K27ac_WT_IgG/H3K27ac_WT_IgG_homer_peaks.bed"
+    output_dir <- "/home/arendeiro/projects/mthfd1/results/diffbind_analysis.H3K27ac_peaks.top500.lola"
 
-    for i, sample in enumerate([sample for sample in analysis.samples if sample.ip != "IgG"]):
-        print(sample.name)
-        index = analysis.support[analysis.support[sample.name] > 0].index
+    regionDB = loadRegionDB(c(dbPath1, dbPath2))
+    userSet <- LOLA::readBed(bed_file)
+    userUniverse  <- LOLA::readBed(universe_file)
+    lolaResults = runLOLA(list(userSet), userUniverse, regionDB, cores=8)
+    writeCombinedEnrichment(lolaResults, outFolder=output_dir)
 
-        characterize_regions_structure(
-            df=analysis.coverage_qnorm_annotated.ix[index].dropna(),
-            prefix=sample.name,
-            output_dir=os.path.join(analysis.results_dir, sample.name))
+    # Motif analysis
+    c = homer_motifs(
+        "/home/arendeiro/projects/mthfd1/results/chipseq_peaks/H3K27ac_WT_IgG/H3K27ac_WT_IgG_homer_peaks.bed",
+        "/home/arendeiro/projects/mthfd1/results/diffbind_analysis.H3K27ac_peaks.top500.lola", genome="hg19")
+    !findMotifsGenome.pl /home/arendeiro/projects/mthfd1/results/all_diff.bed hg19r /home/arendeiro/projects/mthfd1/results/diffbind_analysis.H3K27ac_peaks.top500.lola -size 1000 -h -p 2 -len 8,10,12,14 -noknown
 
-        characterize_regions_function(
-            df=analysis.coverage_qnorm_annotated.ix[index].dropna(),
-            output_dir=os.path.join(analysis.results_dir, sample.name),
-            prefix=sample.name)
+    !cut -f 1,2,3 /home/arendeiro/projects/mthfd1/results/all_diff.bed \
+    > /home/arendeiro/projects/mthfd1/results/all_diff.3col.bed
+    bed_to_fasta(
+        "/home/arendeiro/projects/mthfd1/results/all_diff.3col.bed",
+        "/home/arendeiro/projects/mthfd1/results/all_diff.fa")
+    cmd = meme_ame(
+        input_fasta="/home/arendeiro/projects/mthfd1/results//all_diff.fa",
+        output_dir="/home/arendeiro/projects/mthfd1/results/diffbind_analysis.H3K27ac_peaks.top500.lola")
 
-    # De novo motif finding
-    cmd = "meme-chip "
-    cmd += "-meme-p 12 "
-    cmd += "-oc {} ".format(os.path.join(analysis.results_dir, "HAP1_ChIPmentation_MTHFD1_C3_WT"))
-    cmd += "-db ~/resources/motifs/motif_databases/HUMAN/HOCOMOCOv10.meme"
-    cmd += "-index-name meme_chip.html "
-    cmd += " {}".format(os.path.join(analysis.results_dir, "HAP1_ChIPmentation_MTHFD1_C3_WT", "HAP1_ChIPmentation_MTHFD1_C3_WT_regions.fa"))
+    # Enrichments
+    # Upload BED file to Enrichr, download Reactome_2016 table
+    df = pd.read_csv(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.condition.differential.enrichr.Reactome_2016.tsv"), sep="\t")
+    df["Term"] = df["Term"].str.replace("_Homo .*", "")
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    top_n = 20
+    sns.barplot(data=df.sort_values("Combined Score", ascending=False).head(top_n), y="Term", x="Combined Score", orient="horizontal", ax=axis)
+    sns.despine(fig)
+    fig.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.enrichr.Reactome.barplot.svg"), bbox_inches="tight", dpi=300)
+
+    term_gene_assoc = df.set_index("Term")["Genes"].str.split(";").apply(pd.Series).stack().reset_index(level=0)
+    term_gene_assoc = term_gene_assoc.rename(columns={0: "Gene"})
+    term_gene_assoc['indent'] = 1
+    piv = pd.pivot_table(
+        term_gene_assoc,
+        index="Term",
+        columns="Gene",
+        values="indent", fill_value=0)
+
+    sig_piv = piv.loc[df.sort_values(["Combined Score"], ascending=False).head(top_n)['Term'], :]
+
+    g = sns.clustermap(sig_piv.loc[:, sig_piv.sum() != 0], square=True, figsize=(4, 4), row_cluster=False)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+    g.savefig(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.top500.enrichr.Reactome.gene-pathway.heatmap.svg"), bbox_inches="tight", dpi=300)
+
+
+    # # BRD4 vs MTHFD1
+    # samples <- read.csv("metadata/diffBind_design.complete.csv")
+    # samples["Peaks"] <- samples["H3K27acPeaks"]
+    # diffbind_factors <- dba(sampleSheet=samples)
+    # diffbind_factors <- dba.count(diffbind_factors)
+    # diffbind_factors <- dba.contrast(diffbind_factors, categories=DBA_CONDITION, block=DBA_REPLICATE, minMembers=2)
+    # diffbind_factors <- dba.analyze(diffbind_factors, bFullLibrarySize=TRUE, bCorPlot=FALSE, bParallel=TRUE)  # , method=DBA_ALL_METHODS
+    # diffbind_factors.DB <- dba.report(diffbind_factors, bNormalized=TRUE, bCalled=TRUE, th=1.0, bUsePval=TRUE, fold=0)  # , method=DBA_ALL_METHODS
+    # write.table(as.data.frame(diffbind_factors.DB), paste("results/diffbind_analysis.H3K27ac_peaks", "condition", "differential.csv", sep="."), sep=",", row.names=FALSE)
+
+
+    # # QC plots
+    # diff = pd.read_csv(os.path.join("results", "diffbind_analysis.H3K27ac_peaks.condition.differential.csv"))
+    # diff['-log_pvalue'] = -np.log10(diff["p.value"])
+    # fig, axis = plt.subplots(1, 3, figsize=(3 * 4, 1 * 4))
+    # # Scatter
+    # lim_max = max(diff["Conc_DMSO"].max(), diff["Conc_dBET"].max())
+    # axis[0].scatter(diff["Conc_DMSO"], diff["Conc_dBET"], alpha=0.2, s=2, rasterized=True)
+    # axis[0].set_xlim((0, lim_max))
+    # axis[0].set_ylim((0, lim_max))
+    # # MA
+    # axis[1].scatter(diff["Conc"], diff["Fold"], alpha=0.2, s=2, rasterized=True)
+    # # Volcano
+    # lim_max = max(diff["Fold"].abs())
+    # axis[2].scatter(diff["Fold"], diff["-log_pvalue"], alpha=0.2, s=2, rasterized=True)
+    # sig = diff[diff['FDR'] < 0.05].index
+    # axis[2].scatter(diff.loc[sig, "Fold"], diff.loc[sig, "-log_pvalue"], alpha=0.5, s=2, color="red", rasterized=True)
+    # axis[2].set_xlim((-lim_max, lim_max))
+
+
+    # Correlate occupancy and changes in gene expression
+
+    ## get gene expression changes
+    expr = get_gene_expression_data()
+
+    ## get coverage in H3K27ac peaks
+    analysis.set_consensus_sites(os.path.join("results", "chipseq_peaks", "H3K27ac_WT_IgG", "H3K27ac_WT_IgG_homer_peaks.bed"))
+    analysis.coverage()
+    coverage_rpm = analysis.normalize(method="total")
+    analysis.get_peak_gene_annotation()
+    coverage_rpm_gene = get_gene_level_accessibility(analysis, matrix="coverage_rpm").drop(['start', 'end'], axis=1)
+
+    g = analysis.gene_annotation['gene_name'].str.split(",").apply(pd.Series).stack()
+    g.index = g.index.droplevel(1)
+    g.name = "gene_name"
+
+    occ2 = occ.join(g).drop("gene_name", axis=1)
+    occ2.index = occ.join(g).reset_index().set_index(['index', 'gene_name']).index
+    occ2.columns = occ.columns
+    occ3 = occ2.groupby(level="gene_name").mean()
+    occ3 = occ3[occ3.columns[occ3.columns.str.contains("Conc_dBET|Conc_DMSO")]]
+
+    ## For each comparison get occupancy in
+    fig, axis = plt.subplots(3, 3, figsize=(4 * 3, 4 * 3), sharey=True, sharex=True)
+    axis = axis.flatten()
+    threshold = 0.05
+    results = pd.DataFrame()
+    for i, comparison in enumerate(expr['comparison_name'].unique()):
+        if "HAP1" not in comparison:
+            continue
+        print(comparison)
+        diff = expr[(expr['comparison_name'] == comparison) & (expr['q_value'] < threshold) & (expr['mean'] > 1)]
+
+        up = diff[diff['log2(fold_change)'] > 0]
+        down = diff[diff['log2(fold_change)'] < 0]
+
+        if (comparison.endswith("_DMSO") or comparison.endswith("shPLKO")):
+            print("reversing")
+            down_ = up
+            up_ = down
+            down = down_
+            up = up_
+
+        up_genes = up['gene'].str.split(",").apply(pd.Series).stack().drop_duplicates()
+        down_genes = down['gene'].str.split(",").apply(pd.Series).stack().drop_duplicates()
+
+        # Get random set of genes with same size
+        random_genes = (
+            expr[(expr['comparison_name'] == comparison) & (expr['q_value'] > threshold) & (expr['mean'] > 1)]
+            ['gene'].str.split(",").apply(pd.Series).stack().drop_duplicates()
+        )
+        random_up_genes = random_genes.sample(up_genes.shape[0] + down_genes.shape[0])
+        random_down_genes = random_genes.sample(up_genes.shape[0] + down_genes.shape[0])
+
+        # Use RPM values
+        u = pd.melt(coverage_rpm_gene.ix[up_genes].dropna())
+        d = pd.melt(coverage_rpm_gene.ix[down_genes].dropna())
+        u['direction'] = 'up'
+        d['direction'] = 'down'
+        c = u.append(d)
+
+        fig, axis = plt.subplots(1, 1, figsize=(6, 12))
+        sns.boxplot(data=c, x="value", y="variable", hue="direction", orient="horizontal", ax=axis)
+        sns.despine(fig)
+        fig.savefig(os.path.join("results", "ChIP-RNA.diff.{}.{}.boxplot.svg".format(threshold, comparison)), dpi=300, bbox_inches="tight")
+
+        # Use concentration values estimated by DiffBind
+        u = pd.melt(occ3.ix[up_genes].dropna())
+        d = pd.melt(occ3.ix[down_genes].dropna())
+        u['direction'] = 'up'
+        d['direction'] = 'down'
+        r_u = pd.melt(occ3.ix[random_up_genes].dropna())
+        r_d = pd.melt(occ3.ix[random_down_genes].dropna())
+        r_u['direction'] = 'random_up'
+        r_d['direction'] = 'random_down'
+        c = u.append(d)
+        c = c.append(r_u)
+        c = c.append(r_d)
+        sns.boxplot(data=c, x="value", y="variable", hue="direction", orient="horizontal", ax=axis[i])
+        axis[i].set_title(comparison + "\nup: {}; down: {}".format(up_genes.shape[0], down_genes.shape[0]))
+
+        for group in d['variable'].unique():
+            from scipy.stats import ks_2samp
+            a = d.loc[d['variable'] == group, 'value']
+            b = u.loc[u['variable'] == group, 'value']
+            t = ks_2samp(a, b)
+            results = results.append(pd.Series([comparison, group, np.log2(a.mean() / b.mean()), t[0], t[1]]), ignore_index=True)
+
+    sns.despine(fig)
+    fig.savefig(os.path.join("results", "ChIP-RNA.diff.{}.all.comparisons.chipseq_diffbind_estimates.boxplot.svg".format(threshold)), dpi=300, bbox_inches="tight")
+
+    results.columns = ['comparison', 'group', 'logfoldchange', 'stat', 'p-value']
+    results.to_csv(os.path.join("results", "ChIP-RNA.diff.{}.all.comparisons.chipseq_diffbind_estimates.test_results.csv".format(threshold)))
+
+    # # Correlation of fold-changes
+    # comparison = "HAP1_DMSO_dBet6"
+    # e = expr.loc[(expr['comparison_name'] == comparison), 'gene'].str.split(",").apply(pd.Series).stack()
+    # e.index = e.index.droplevel(1)
+    # e.name = "gene_name"
+    # e = expr.loc[(expr['comparison_name'] == comparison), :].join(e)
+    # e = e.set_index("gene_name")
+
+    # o = occ2.groupby(level="gene_name").mean().drop_duplicates()
+
+    # e = e.loc[o.index, 'log2(fold_change)'].dropna()
+    # o = o.loc[e.index, 'Fold_mthfd1'].dropna()
+
+    # fig, axis = plt.subplots(1)
+    # axis.scatter(o, e, s=3, alpha=0.3, rasterized=True)
+    # sns.despine(fig)
+    # fig.savefig(os.path.join("results", "ChIP-RNA.diff.mthfd1.fold_changes.scatter.svg"), dpi=300, bbox_inches="tight")
 
 
 if __name__ == '__main__':
@@ -1232,3 +650,10 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("Program canceled by user!")
         sys.exit(1)
+
+
+def ci(x, ci=.95, N=1000):
+    from scipy.stats import norm
+    i = norm.interval(ci, loc=x.mean(), scale=x.std() / np.sqrt(N))
+    return i[1] - i[0]
+
