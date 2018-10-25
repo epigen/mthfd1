@@ -29,7 +29,7 @@ analysis: merge
 	sh src/peak_overlap.sh
 	python -u src/peak_overlap.plot.py
 
-	sh src/make_merged_bigwigs.sh
+	sh src/make_bigwigs.sh
 	sh src/heatmaps.sh
 
 	Rscript src/diffBind.R
