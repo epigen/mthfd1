@@ -1,3 +1,5 @@
+[![PEP compatible](http://pepkit.github.io/img/PEP-compatible-green.svg)](http://pepkit.github.io)
+
 ### MTHFD1 links folate metabolism to BRD4-mediated transcriptional regulation
 
 Sara Sdelci, André F. Rendeiro, Philipp Rathert, Gerald Hofstätter, Anna Ringler, Herwig P. Moll, Wanhui You, Kristaps Klavins, Bettina Gürtl, Matthias Farlik, Sandra Schick, Freya Klepsch, Matthew Oldach, Pisanu Buphamalai, Fiorella Schischlik, Peter Májek, Katja Parapatics, Christian Schmidl, Michael Schuster, Thomas Penz, Dennis L. Buckley, Otto Hudecz, Richard Imre, Robert Kralovics, Keiryn L. Bennett, Andre Müller, Karl Mechtler, Jörg Menche, James E. Bradner, Georg E. Winter, Emilio Casanova, Christoph Bock, Johannes Zuber, Stefan Kubicek
