@@ -1,10 +1,8 @@
 ### MTHFD1 links folate metabolism to BRD4-mediated transcriptional regulation
 
-Sara Sdelci, André Rendeiro, Philipp Rathert, Gerald Hofstätter, Anna Ringler, Herwig P. Moll, Wanhui You, Kristaps Klavins, Bettina Gürtl, Matthias Farlik, Sandra Schick, Freya Klepsch, Matthew Oldach, Pisanu Buphamalai, Fiorella Schischlik, Peter Májek, Katja Parapatics, Christian Schmidl, Michael Schuster, Thomas Penz, Dennis L. Buckley, Otto Hudecz, Richard Imre, Robert Kralovics, Keiryn L. Bennett, Andre Müller, Karl Mechtler, Jörg Menche, James E. Bradner, Georg E. Winter, Emilio Casanova, Christoph Bock, Johannes Zuber, Stefan Kubicek
+Sara Sdelci, André F. Rendeiro, Philipp Rathert, Gerald Hofstätter, Anna Ringler, Herwig P. Moll, Wanhui You, Kristaps Klavins, Bettina Gürtl, Matthias Farlik, Sandra Schick, Freya Klepsch, Matthew Oldach, Pisanu Buphamalai, Fiorella Schischlik, Peter Májek, Katja Parapatics, Christian Schmidl, Michael Schuster, Thomas Penz, Dennis L. Buckley, Otto Hudecz, Richard Imre, Robert Kralovics, Keiryn L. Bennett, Andre Müller, Karl Mechtler, Jörg Menche, James E. Bradner, Georg E. Winter, Emilio Casanova, Christoph Bock, Johannes Zuber, Stefan Kubicek
 
-<sup>\*</sup>Shared first authors
-
-**Paper**: [http://dx.doi.org/](http://dx.doi.org/)
+<!-- **Paper**: [http://dx.doi.org/](http://dx.doi.org/) -->
 
 This repository contains scripts used in the analysis of the data in the paper.
 
