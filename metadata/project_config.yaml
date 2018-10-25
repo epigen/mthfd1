@@ -1,30 +1,38 @@
-# This project config file describes all *project-specific variables*
-# Its primary purpose as as input to Looper, which will submit jobs as appropriate
-# for each sample in the project.
-# But it is also read by other tools, including:
-# - project sample loop (primary purpose)
-# - make_trackhubs scripts to produce web accessible results
-# - stats summary scripts
-# - analysis scripts requiring pointers to metadata, results, and other options.
 
-paths:
-  # output_dir: the parent, shared space for this project where results will go
-  output_dir: /scratch/lab_bock/shared/projects/mthfd1
-  # results and submission subdirs are subdirectors directories under parent output_dir
-  # results: where output sample folders will go
-  # submission: where cluster submit scripts and log files will go
-  results_subdir: data
-  submission_subdir: runs
-  # pipelines_dir: the directory where the Looper will find pipeline
-  # scripts (and accompanying pipeline config files) for submission.
-  pipelines_dir: /home/arendeiro/workspace/pipelines
+project_name: mthfd1
+project_description: Sdelci et al (2018) - MTHFD1 is a genetic interactor of BRD4 and links folate metabolism to transcriptional regulation
+username: arendeiro
+email: arendeiro@cemm.oeaw.ac.at
 
 metadata:
-  # Relative paths are considered relative to this project config file.
-  # Typically, this project config file is stored with the project metadata
-  # sample_annotation: one-row-per-sample metadata
+  output_dir: /scratch/lab_bock/shared/projects/mthfd1
+  results_subdir: data
+  submission_subdir: runs
+  pipeline_interfaces: /home/arendeiro/workspace/open_pipelines/pipeline_interface.yaml
   sample_annotation: /scratch/lab_bock/shared/projects/mthfd1/metadata/annotation.csv
-  merge_table: /scratch/lab_bock/shared/projects/mthfd1/metadata/merge_table.csv
+  sample_subannotation: /scratch/lab_bock/shared/projects/mthfd1/metadata/merge_table.csv
+  comparison_table: /scratch/lab_bock/shared/projects/mthfd1/metadata/comparison_table.csv
+
+sample_attributes:
+ - sample_name
+ - cell_line
+ - library
+ - condition
+ - knockout_clone
+ - ip
+ - antibody_clone
+ - replicate
+ - experiment_name
+ - experiment_abbrv
+
+group_attributes:
+ - cell_line
+ - condition
+ - knockout_clone
+ - ip
+ - antibody_clone
+ - replicate
+ - experiment_abbrv
 
 data_sources:
   # specify the ABSOLUTE PATH of input files using variable path expressions
@@ -36,28 +44,11 @@ data_sources:
 genomes:
   human: hg19
 
-transcriptomes:
-  human: hg19_cdna
-
-pipeline_config:
-  # pipeline configuration files used in project.
-  # Default (null) means use the generic config for the pipeline.
-  atacseq: null
-
 compute:
-  # submission_template: the submission form which will be replaced with compute resource parameters
-  # Use this to change your cluster manager (SLURM, SGE, LFS, etc)
-  # Relative paths are relative to the pipelines_dir
-  submission_template: templates/slurm_template.sub
+  submission_template: slurm_template.sub
   submission_command: sbatch
-  # To run on the localhost:
-  #submission_template: templates/localhost_template.sub
-  #submission_command: sh
 
 trackhubs:
   trackhub_dir: /data/groups/lab_bock/public_html/arendeiro/mthfd1/
-  # url: if you include this, the make_trackhubs will produce a link to your track hub in the project folder.
-  url: http://biomedical-sequencing.at/bocklab/arendeiro/
-
-username: arendeiro
-email: arendeiro@cemm.oeaw.ac.at
+  url: http://biomedical-sequencing.at/bocklab/arendeiro/mthfd1
+  # http://genome-euro.ucsc.edu/cgi-bin/hgTracks?db=hg19&hubUrl=http%3A%2F%2Fbiomedical-sequencing.at%2Fbocklab%2Farendeiro%2Fmthfd1%2Fhub.txt

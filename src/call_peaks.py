@@ -1,125 +1,92 @@
 #!/usr/bin/env python
 
 """
-This script calls peaks for the mthfd1 project.
 """
 
+if __name__ == '__main__':
+    import matplotlib
+    matplotlib.use("Agg")
+
 import os
+import sys
+
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-from looper.models import Project
-from pypiper import NGSTk
-import textwrap
+import seaborn as sns
+from peppy import Project
+from ngs_toolkit.chipseq import ChIPSeqAnalysis
 
 
-def macs2CallPeaks(treatmentBams, outputDir, sampleName, genome, controlBams=None, broad=False, paired=False):
-    """
-    Use MACS2 to call peaks.
-    """
-    sizes = {"hg38": 2.7e9, "hg19": 2.7e9, "mm10": 1.87e9, "dr7": 1.412e9}
-
-    cmd = "macs2 callpeak -t {0}".format(treatmentBams if type(treatmentBams) is str else " ".join(treatmentBams))
-    if controlBams is not None:
-        cmd += " -c {0}".format(controlBams if type(controlBams) is str else " ".join(controlBams))
-    if paired:
-        cmd += "-f BAMPE "
-    if not broad:
-        cmd += " --fix-bimodal --extsize 180 --bw 200"
-    else:
-        # Parameter setting for broad factors according to Nature Protocols (2012)
-        # Vol.7 No.9 1728-1740 doi:10.1038/nprot.2012.101 Protocol (D) for H3K36me3
-        cmd += " --broad --nomodel --extsize 73 --pvalue 1e-3"
-    cmd += " -g {0} -n {1} --outdir {2}".format(sizes[genome], sampleName, outputDir)
-
-    return cmd
+sns.set_style("white")
+plt.rcParams['svg.fonttype'] = 'none'
 
 
-def macs2CallPeaks_weak(treatmentBams, outputDir, sampleName, genome, controlBams=None, broad=False):
-    """
-    Use MACS2 to call peaks.
-    """
+def main():
+    # Start Project object and curate samples
+    prj = Project(os.path.join("metadata", "project_config.yaml"))
+    prj._samples = [s for s in prj.samples if s.to_use in [1, "1", True]]
+    for sample in prj.samples:
+        if hasattr(sample, "protocol"):
+            sample.library = sample.protocol
 
-    sizes = {"hg38": 2.7e9, "hg19": 2.7e9, "mm10": 1.87e9, "dr7": 1.412e9}
+        if sample.library in ["ATAC-seq", "ChIP-seq", "ChIPmentation"]:
+            sample.mapped = os.path.join(
+                sample.paths.sample_root,
+                "mapped", sample.name + ".trimmed.bowtie2.bam")
+            sample.filtered = os.path.join(
+                sample.paths.sample_root,
+                "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
+            sample.peaks = os.path.join(
+                sample.paths.sample_root,
+                "peaks", sample.name + "_peaks.narrowPeak")
 
-    if not broad:
-        cmd = "macs2 callpeak -t {0}".format(treatmentBams if type(treatmentBams) is str else " ".join(treatmentBams))
-        if controlBams is not None:
-            cmd += " -c {0}".format(controlBams if type(controlBams) is str else " ".join(controlBams))
-        cmd += " --nomodel --extsize 73 --pvalue 1e-3 -g {0} -n {1} --outdir {2}".format(sizes[genome], sampleName, outputDir)
-    else:
-        # Parameter setting for broad factors according to Nature Protocols (2012)
-        # Vol.7 No.9 1728-1740 doi:10.1038/nprot.2012.101 Protocol (D) for H3K36me3
-        cmd = "macs2 callpeak -t {0}".format(treatmentBams if type(treatmentBams) is str else " ".join(treatmentBams))
-        if controlBams is not None:
-            cmd += " -c {0}".format(controlBams if type(controlBams) is str else " ".join(controlBams))
-        cmd += " --broad --nomodel --extsize 73 --pvalue 1e-3 -g {0} -n {1} --outdir {2}".format(
-            sizes[genome], sampleName, outputDir
-        )
+    # Start Analysis object
+    chip_analysis = ChIPSeqAnalysis(name=prj.project_name + "_chipseq", samples=prj.samples)
+    chip_analysis.sample_variables = prj.sample_attributes
+    chip_analysis.group_variables = prj.group_attributes
 
-    return cmd
+    comparison_table = pd.read_csv(os.path.join("metadata", "comparison_table.csv"))
 
+    chip_analysis.call_peaks_from_comparisons(comparison_table)
 
-def call_peaks(samples, name, controls=None):
-    """
-    Call H3K27ac peaks for pairs of sample and igg control.
-    """
-    output_dir = os.path.join("data", "peaks", name)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    job_file = os.path.join(output_dir, "call_peaks.sh")
-    # prepare slurm job header
-    cmd = tk.slurm_header(
-        name + "_MACS2", os.path.join(output_dir, "call_peaks.log"),
-        cpus_per_task=8,
-        queue="shortq")
+    chip_analysis.filter_peaks(comparison_table, filter_bed=os.path.join("data", "external", "wgEncodeDacMapabilityConsensusExcludable.bed"))
+    # filter_peaks(chip_analysis, comparison_table, filter_bed=os.path.join("data", "external", "wgEncodeDacMapabilityConsensusExcludable.bed"))
 
-    #
-    cmd += macs2CallPeaks_weak(
-        treatmentBams=[sample.filtered for sample in samples],
-        controlBams=[sample.filtered for sample in controls] if controls is not None else None,
-        outputDir=os.path.join("data", "peaks", name),
-        sampleName=name,
-        genome=[sample.genome for sample in samples][0],
-        broad=False)
-
-    # write job to file
-    with open(job_file, 'w') as handle:
-        handle.writelines(textwrap.dedent(cmd))
-
-    tk.slurm_submit_job(job_file)
+    # Get summary of peak calls
+    peak_counts = chip_analysis.summarize_peaks_from_comparisons(comparison_table, filtered=True)
+    # peak_counts = summarize_peaks_from_comparisons(chip_analysis, comparison_table, filtered=True)
+    peak_counts.to_csv(os.path.join(chip_analysis.results_dir, "chipseq_peaks", "peak_count_summary.csv"), index=False)
 
 
-# Start project
-prj = Project("metadata/project_config.yaml")
-prj.add_sample_sheet()
-[sample.get_read_type() for sample in prj.samples]
+    # Plot peak numbers
+    peak_counts['IP'] = list(map(lambda x: x[1], peak_counts['comparison_name'].str.split("_")))
+    peak_counts['condition'] = list(map(lambda x: x[2], peak_counts['comparison_name'].str.split("_")))
+    ips = ["BRD4", "MTHFD1"]
 
-# Read comparison table
-comparisons = pd.read_csv(os.path.join("metadata", "comparison_table.csv"))
+    peak_counts = peak_counts.loc[
+        (((peak_counts['IP'] == "BRD4") & (peak_counts['peak_type'] == "homer_factor")) |
+        ((peak_counts['IP'] == "H3K27ac") & (peak_counts['peak_type'] == "homer_factor")) |
+        ((peak_counts['IP'] == "MTHFD1") & (peak_counts['peak_type'] == "homer_histone"))) &
+        (peak_counts['comparison_name'].str.contains("IgG"))
+    ]
 
-
-tk = NGSTk()
-
-# call peaks as defined in comparison table
-for comparison in comparisons["comparison"].drop_duplicates():
-    sub = comparisons[comparisons["comparison"] == comparison]
-
-    treatment_samples = [s for s in prj.samples if s.name in sub[sub["comparison_side"] == 1]['sample'].tolist()]
-    control_samples = [s for s in prj.samples if s.name in sub[sub["comparison_side"] == 0]['sample'].tolist()]
-
-    call_peaks(treatment_samples, comparison + "_ctrl", control_samples)
-
-
-# call peaks as defined in comparison table but with all inputs as background
-for comparison in comparisons["comparison"].drop_duplicates():
-    sub = comparisons[comparisons["comparison"] == comparison]
-
-    treatment_samples = [s for s in prj.samples if s.name in sub[sub["comparison_side"] == 1]['sample'].tolist()]
-    control_samples = [s for s in prj.samples if s.ip in ["IgG", "Input"]]
-
-    call_peaks(treatment_samples, comparison + "_allctrls", control_samples)
+    fig, axis = plt.subplots(2, len(ips), figsize=(len(ips) * 2, 2 * 2), sharey=False)
+    for i, label in enumerate(['DMSO|dBET', 'WT|MTHFD1KO']):
+        for j, ip in enumerate(ips):
+            sns.barplot(
+                data=peak_counts[(peak_counts['IP'] == ip) & (peak_counts['comparison_name'].str.contains(label))],
+                x='condition', y='peak_counts', ax=axis[i, j])
+            axis[i, j].set_title(ip)
+            axis[i, j].set_xlabel("Condition")
+            axis[i, j].set_ylabel("Peak count")
+    sns.despine(fig)
+    fig.savefig(os.path.join("peak_count_summary.barplot.svg"), dpi=300, bbox_inches="tight")
 
 
-# call peaks without control for all samples
-for sample in [s for s in prj.samples if s.ip != "IgG"]:
-    # Call peaks for all ChIPmentation samples
-    call_peaks([sample], sample.name)
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("Program canceled by user!")
+        sys.exit(1)
