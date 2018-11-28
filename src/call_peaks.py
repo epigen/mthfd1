@@ -11,7 +11,6 @@ import os
 import sys
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import seaborn as sns
 from peppy import Project
@@ -65,9 +64,10 @@ def main():
     ips = ["BRD4", "MTHFD1"]
 
     peak_counts = peak_counts.loc[
-        (((peak_counts['IP'] == "BRD4") & (peak_counts['peak_type'] == "homer_factor")) |
-        ((peak_counts['IP'] == "H3K27ac") & (peak_counts['peak_type'] == "homer_factor")) |
-        ((peak_counts['IP'] == "MTHFD1") & (peak_counts['peak_type'] == "homer_histone"))) &
+        (
+            ((peak_counts['IP'] == "BRD4") & (peak_counts['peak_type'] == "homer_factor")) |
+            ((peak_counts['IP'] == "H3K27ac") & (peak_counts['peak_type'] == "homer_factor")) |
+            ((peak_counts['IP'] == "MTHFD1") & (peak_counts['peak_type'] == "homer_histone"))) &
         (peak_counts['comparison_name'].str.contains("IgG"))
     ]
 

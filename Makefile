@@ -28,6 +28,7 @@ analysis: merge
 	python -u src/call_peaks.py
 	sh src/peak_overlap.sh
 	python -u src/peak_overlap.plot.py
+	python -u src/great_enrichments.plot.py
 
 	sh src/make_bigwigs.sh
 	sh src/heatmaps.sh
@@ -36,6 +37,7 @@ analysis: merge
 	python -u src/diffBind.plot.py
 	python -u src/diffBind.great_enrichments.plot.py
 
+	python -u rnaseq_chipseq_analysis.py
 
 all: requirements process merge peaks analysis
 

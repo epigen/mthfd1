@@ -5,8 +5,14 @@ R
 """
 
 library("DiffBind")
+
+outputDir = "results/differential_analysis_ChIP-seq"
+
+# Create DBA object
 d <- dba(sampleSheet="metadata/diffBind_design.csv")
+# Get count data
 d <- dba.count(d)
+# Add contrasts
 d <- dba.contrast(
     d,
     dba.mask(d, DBA_CONDITION, 'MTHFD1KO') + dba.mask(d, DBA_FACTOR, 'BRD4') == 2,
@@ -35,16 +41,24 @@ d <- dba.contrast(
     "MTHFD1_dBET",
     "MTHFD1_DMSO",
     )
+
+# Run comparison of contrasts
 d <- dba.analyze(d, method=DBA_ALL_METHODS, filter=0, bSubControl=FALSE)
 
-for (c in seq(4)){
+# Save
+for (c in seq(length(d$contrasts))){
+    s <- paste0(
+            dba.show(d, bContrasts=TRUE)[c, "Group1"],
+            "_vs_",
+            dba.show(d, bContrasts=TRUE)[c, "Group2"]
+            )
     d.DB <- dba.report(
         d, c, 
         bNormalized=TRUE,
         th=1,
-        file=paste0(
-            dba.show(d, bContrasts=TRUE)[c, "Group1"],
-            "_vs_",
-            dba.show(d, bContrasts=TRUE)[c, "Group2"]
-            ))
+        file=s)
+    # save in 
+    file.rename(
+        paste0("DBA_", s, ".csv"),
+        paste0(outputDir, "/DBA_", s, ".csv"))
 }
